@@ -36,10 +36,6 @@ jobs:
           git clone https://android.googlesource.com/kernel/common \
             -b android13-5.15.178_r00 --depth=1 kernel-src
 
-      - name: Prevent git version suffix (+)
-        run: |
-          touch kernel-src/.scmversion
-
       - name: Patch kernel module check_version to bypass CRC checks
         run: |
           python3 -c "
@@ -64,13 +60,13 @@ jobs:
           cp kernel_config/stock_defconfig kernel-src/arch/arm64/configs/nethunter_defconfig
           cat >> kernel-src/arch/arm64/configs/nethunter_defconfig << 'EOF'
 
-          # NetHunter WiFi Stack
+          # NetHunter WiFi Stack - built-in
           CONFIG_CFG80211=y
           CONFIG_MAC80211=y
           CONFIG_MAC80211_HAS_RC=y
           CONFIG_WLAN=y
 
-          # Atheros AR9271
+          # Atheros AR9271 - built-in
           CONFIG_WLAN_VENDOR_ATH=y
           CONFIG_ATH_COMMON=y
           CONFIG_ATH9K_HW=y
@@ -84,8 +80,12 @@ jobs:
           CONFIG_MODULES=y
           CONFIG_MODULE_UNLOAD=y
           CONFIG_MODULE_FORCE_UNLOAD=y
+
+          # CONFIG_MODVERSIONS is enabled (matching stock)
           CONFIG_MODVERSIONS=y
           CONFIG_ASM_MODVERSIONS=y
+
+          # No module signing
           # CONFIG_MODULE_SIG is not set
           # CONFIG_MODULE_SIG_FORCE is not set
           # CONFIG_MODULE_SIG_PROTECT is not set
@@ -93,13 +93,14 @@ jobs:
           # USB
           CONFIG_FW_LOADER=y
           CONFIG_USB_USBNET=y
+          CONFIG_USB_NET_CDCETHER=y
 
           # 802.11 injection
           CONFIG_MAC80211_MESH=y
           CONFIG_CFG80211_WEXT=y
 
-          # Set custom local version to match stock vermagic exactly
-          CONFIG_LOCALVERSION="-android13-8-ge7eb24fc4398-ab516"
+          # Set custom local version to match stock kernel (without +, letting git append it)
+          CONFIG_LOCALVERSION="-android13-8-ge7eb24fc4398-ab236"
           # CONFIG_LOCALVERSION_AUTO is not set
           EOF
           
@@ -126,6 +127,10 @@ jobs:
 
           echo "=== Build done ==="
           ls out/arch/arm64/boot/
+
+      - name: Verify kernel Image vermagic
+        run: |
+          strings kernel-src/out/arch/arm64/boot/Image | grep -a "5.15.178" || true
 
       - name: Package kernel
         run: |
