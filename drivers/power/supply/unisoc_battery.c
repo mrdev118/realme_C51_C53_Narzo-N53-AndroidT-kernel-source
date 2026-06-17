@@ -39,7 +39,7 @@
 struct sc27xx_fgu_data *gauge_data;
 
 #ifdef OPLUS_FEATURE_CHG_BASIC
-#include "../oplus/v1/oplus_gauge.h"
+#include "../oplus/sprd/oplus_gauge.h"
 #endif
 
 #ifdef OPLUS_FEATURE_CHG_BASIC
