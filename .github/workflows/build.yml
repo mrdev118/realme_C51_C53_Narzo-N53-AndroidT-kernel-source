@@ -13,7 +13,7 @@ jobs:
     - name: Checkout kernel source
       uses: actions/checkout@v4
       with:
-        depth: 1
+        fetch-depth: 1
 
     - name: Install dependencies
       run: |
