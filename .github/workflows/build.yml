@@ -1,4 +1,4 @@
-name: Build NetHunter Kernel - Realme C51
+name: Build NetHunter Kernel - GKI 5.15
 
 on:
   workflow_dispatch:
@@ -10,10 +10,8 @@ jobs:
     runs-on: ubuntu-22.04
     
     steps:
-    - name: Checkout kernel source
+    - name: Checkout repository
       uses: actions/checkout@v4
-      with:
-        fetch-depth: 1
 
     - name: Install dependencies
       run: |
@@ -33,26 +31,15 @@ jobs:
         git clone https://gitlab.com/ThankYouMario/android_prebuilts_clang-standalone/ \
           -b 14 --depth=1 clang
 
-    - name: Clone GCC toolchain
+    - name: Clone GKI 5.15 Common Kernel source
       run: |
-        git clone https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 \
-          -b android10-release --depth=1 toolchain64
-
-    - name: Find defconfig
-      run: |
-        echo "Available defconfigs:"
-        ls arch/arm64/configs/
-        # Identify the correct one for C51
-        ls arch/arm64/configs/ | grep -i "sprd\|sharkl\|realme\|rmx\|ums"
+        git clone https://android.googlesource.com/kernel/common \
+          -b android13-5.15 --depth=1 kernel-src
 
     - name: Apply NetHunter WiFi config additions
       run: |
-        # Find the defconfig — adjust name after checking step above
-        DEFCONFIG=$(ls arch/arm64/configs/ | grep -i "sprd_sharkl5pro\|sharkl5pro\|realme" | head -1)
-        echo "Using defconfig: $DEFCONFIG"
-        echo "DEFCONFIG=$DEFCONFIG" >> $GITHUB_ENV
-        
-        cat >> arch/arm64/configs/$DEFCONFIG << 'EOF'
+        # Append NetHunter options to GKI defconfig
+        cat >> kernel-src/arch/arm64/configs/gki_defconfig << 'EOF'
 
         # NetHunter WiFi Stack
         CONFIG_CFG80211=y
@@ -83,7 +70,7 @@ jobs:
         CONFIG_FW_LOADER=y
         CONFIG_FW_LOADER_USER_HELPER=y
 
-        # USB networking base (already in your kernel but reinforce)
+        # USB networking base
         CONFIG_USB_USBNET=y
         CONFIG_USB_NET_CDCETHER=y
 
@@ -92,45 +79,38 @@ jobs:
         CONFIG_CFG80211_WEXT=y
         EOF
         
-        echo "NetHunter config applied to $DEFCONFIG"
+        echo "NetHunter GKI config applied"
 
-    - name: Set build environment
-      run: |
-        echo "ARCH=arm64" >> $GITHUB_ENV
-        echo "SUBARCH=arm64" >> $GITHUB_ENV
-        echo "CROSS_COMPILE=$(pwd)/toolchain64/bin/aarch64-linux-android-" >> $GITHUB_ENV
-        echo "CC=$(pwd)/clang/bin/clang" >> $GITHUB_ENV
-        echo "CLANG_TRIPLE=aarch64-linux-gnu-" >> $GITHUB_ENV
-
-    - name: Build kernel
+    - name: Build GKI Kernel
       run: |
         export ARCH=arm64
         export SUBARCH=arm64
-        export CROSS_COMPILE=$(pwd)/toolchain64/bin/aarch64-linux-android-
-        export CC=$(pwd)/clang/bin/clang
-        export CLANG_TRIPLE=aarch64-linux-gnu-
+        export PATH=$(pwd)/clang/bin:$PATH
+        
+        cd kernel-src
         
         # Load defconfig
-        make O=out ARCH=arm64 ${{ env.DEFCONFIG }}
+        make O=out ARCH=arm64 gki_defconfig
         
-        # Build
+        # Compile
         make O=out ARCH=arm64 \
-          CC=$(pwd)/clang/bin/clang \
-          CROSS_COMPILE=$(pwd)/toolchain64/bin/aarch64-linux-android- \
+          CC=clang \
           CLANG_TRIPLE=aarch64-linux-gnu- \
+          CROSS_COMPILE=aarch64-linux-gnu- \
+          LLVM=1 \
+          LLVM_IAS=1 \
           KCFLAGS="-Wno-error" \
-          -j$(nproc) 2>&1 | tee build.log
+          -j$(nproc) 2>&1 | tee ../build.log
         
         echo "Build completed"
         ls out/arch/arm64/boot/
 
-    - name: Upload kernel image
+    - name: Upload GKI kernel image
       uses: actions/upload-artifact@v4
       with:
         name: kernel-nethunter-rmx3830
         path: |
-          out/arch/arm64/boot/Image.gz*
-          out/arch/arm64/boot/Image*
+          kernel-src/out/arch/arm64/boot/Image
           build.log
         retention-days: 7
 
