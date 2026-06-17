@@ -77,6 +77,9 @@ jobs:
         # 802.11 injection support
         CONFIG_MAC80211_MESH=y
         CONFIG_CFG80211_WEXT=y
+
+        # Disable BTF to avoid pahole requirements
+        # CONFIG_DEBUG_INFO_BTF is not set
         EOF
         
         echo "NetHunter GKI config applied"
