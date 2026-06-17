@@ -1,4 +1,4 @@
-name: Build NetHunter Kernel - GKI 5.15
+name: Build NetHunter Kernel - Realme C51
 
 on:
   workflow_dispatch:
@@ -10,8 +10,10 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: Checkout repository
+      - name: Checkout Realme kernel source
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install dependencies
         run: |
@@ -23,7 +25,7 @@ jobs:
             binutils-aarch64-linux-gnu \
             libncurses-dev libelf-dev \
             python3 python3-pip \
-            zip unzip cpio pahole \
+            zip unzip cpio \
             device-tree-compiler
 
       - name: Clone Clang toolchain
@@ -31,90 +33,52 @@ jobs:
           git clone https://gitlab.com/ThankYouMario/android_prebuilts_clang-standalone/ \
             -b 14 --depth=1 clang
 
-      - name: Clone GKI 5.15 Common Kernel source
+      - name: Confirm defconfig exists
         run: |
-          git clone https://android.googlesource.com/kernel/common \
-            -b android13-5.15.178_r00 --depth=1 kernel-src
+          echo "=== Available defconfigs ==="
+          ls arch/arm64/configs/
+          echo ""
+          echo "=== Checking for sprd_gki_defconfig ==="
+          ls arch/arm64/configs/sprd_gki_defconfig && echo "FOUND" || echo "NOT FOUND - check ls output above"
 
-      - name: Patch kernel module check_version to bypass CRC checks
+      - name: Apply NetHunter additions
         run: |
-          python3 -c "
-          import pathlib
-          p = pathlib.Path('kernel-src/kernel/module.c')
-          code = p.read_text()
-          idx = code.find('static int check_version(')
-          if idx != -1:
-              brace_idx = code.find('{', idx)
-              if brace_idx != -1:
-                  code = code[:brace_idx+1] + '\n\treturn 1;\n' + code[brace_idx+1:]
-                  p.write_text(code)
-                  print('check_version patched successfully')
-              else:
-                  raise Exception('Opening brace not found after check_version')
-          else:
-              raise Exception('check_version not found')
-          "
+          cat >> arch/arm64/configs/sprd_gki_defconfig << 'EOF'
 
-      - name: Apply NetHunter config
-        run: |
-          cp kernel_config/stock_defconfig kernel-src/arch/arm64/configs/nethunter_defconfig
-          cat >> kernel-src/arch/arm64/configs/nethunter_defconfig << 'EOF'
-
-          # NetHunter WiFi Stack - built-in
-          CONFIG_CFG80211=y
-          CONFIG_MAC80211=y
+          # NetHunter WiFi drivers - as modules to keep Image size near stock
+          CONFIG_CFG80211=m
+          CONFIG_MAC80211=m
           CONFIG_MAC80211_HAS_RC=y
           CONFIG_WLAN=y
-
-          # Atheros AR9271 - built-in
           CONFIG_WLAN_VENDOR_ATH=y
-          CONFIG_ATH_COMMON=y
-          CONFIG_ATH9K_HW=y
-          CONFIG_ATH9K_COMMON=y
-          CONFIG_ATH9K_HTC=y
-
-          # Realtek
+          CONFIG_ATH_COMMON=m
+          CONFIG_ATH9K_HW=m
+          CONFIG_ATH9K_COMMON=m
+          CONFIG_ATH9K_HTC=m
           CONFIG_WLAN_VENDOR_REALTEK=y
+          CONFIG_MAC80211_MESH=y
+          CONFIG_CFG80211_WEXT=y
 
-          # Module support
-          CONFIG_MODULES=y
+          # Module loading - disable sig checks
           CONFIG_MODULE_UNLOAD=y
           CONFIG_MODULE_FORCE_UNLOAD=y
-
-          # CONFIG_MODVERSIONS is enabled (matching stock)
-          CONFIG_MODVERSIONS=y
-          CONFIG_ASM_MODVERSIONS=y
-
-          # No module signing
           # CONFIG_MODULE_SIG is not set
           # CONFIG_MODULE_SIG_FORCE is not set
           # CONFIG_MODULE_SIG_PROTECT is not set
 
           # USB
-          CONFIG_FW_LOADER=y
           CONFIG_USB_USBNET=y
           CONFIG_USB_NET_CDCETHER=y
-
-          # 802.11 injection
-          CONFIG_MAC80211_MESH=y
-          CONFIG_CFG80211_WEXT=y
-
-          # Set custom local version to match stock kernel (without +, letting git append it)
-          CONFIG_LOCALVERSION="-android13-8-ge7eb24fc4398-ab236"
-          # CONFIG_LOCALVERSION_AUTO is not set
+          CONFIG_FW_LOADER_USER_HELPER=y
           EOF
-          
-          echo "NetHunter GKI config applied"
 
-      - name: Build Kernel
+      - name: Build kernel
         run: |
           export ARCH=arm64
           export SUBARCH=arm64
           export PATH=$(pwd)/clang/bin:$PATH
 
-          cd kernel-src
-
-          make O=out ARCH=arm64 nethunter_defconfig
+          make O=out ARCH=arm64 sprd_gki_defconfig
 
           make O=out ARCH=arm64 \
             CC=clang \
@@ -123,22 +87,21 @@ jobs:
             LLVM=1 \
             LLVM_IAS=1 \
             KCFLAGS="-Wno-error" \
-            -j$(nproc) 2>&1 | tee ../build.log
+            -j$(nproc) 2>&1 | tee build.log
 
-          echo "=== Build done ==="
-          ls out/arch/arm64/boot/
+          echo "=== Image size (stock was 47MB) ==="
+          ls -lh out/arch/arm64/boot/Image
 
-      - name: Verify kernel Image vermagic
-        run: |
-          strings kernel-src/out/arch/arm64/boot/Image | grep -a "5.15.178" || true
+          echo "=== Vermagic ==="
+          strings out/arch/arm64/boot/Image | grep "5.15"
 
-      - name: Package kernel
+      - name: Collect artifacts
         run: |
           mkdir -p artifact
-          cp kernel-src/out/arch/arm64/boot/Image artifact/
-          find kernel-src/out/ -name "*.ko" -exec cp {} artifact/ \;
-          echo "Artifacts:"
-          ls artifact/
+          cp out/arch/arm64/boot/Image artifact/
+          find out/ -name "*.ko" -exec cp {} artifact/ \;
+          cp build.log artifact/
+          ls -lh artifact/
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
