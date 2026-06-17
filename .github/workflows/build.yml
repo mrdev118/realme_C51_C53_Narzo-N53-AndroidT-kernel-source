@@ -82,8 +82,6 @@ jobs:
         # USB WiFi firmware loading
         CONFIG_FW_LOADER=y
         CONFIG_FW_LOADER_USER_HELPER=y
-        CONFIG_EXTRA_FIRMWARE="htc_9271.fw"
-        CONFIG_EXTRA_FIRMWARE_DIR="/lib/firmware"
 
         # USB networking base (already in your kernel but reinforce)
         CONFIG_USB_USBNET=y
