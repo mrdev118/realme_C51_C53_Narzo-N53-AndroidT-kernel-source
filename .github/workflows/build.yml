@@ -11,7 +11,7 @@ jobs:
     
     steps:
     - name: Checkout kernel source
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
       with:
         depth: 1
 
@@ -126,7 +126,7 @@ jobs:
         ls out/arch/arm64/boot/
 
     - name: Upload kernel image
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: kernel-nethunter-rmx3830
         path: |
@@ -137,7 +137,7 @@ jobs:
 
     - name: Upload build log on failure
       if: failure()
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: build-log-failure
         path: build.log
