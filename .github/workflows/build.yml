@@ -36,6 +36,29 @@ jobs:
           git clone https://android.googlesource.com/kernel/common \
             -b android13-5.15.178_r00 --depth=1 kernel-src
 
+      - name: Prevent git version suffix (+)
+        run: |
+          touch kernel-src/.scmversion
+
+      - name: Patch kernel module check_version to bypass CRC checks
+        run: |
+          python3 -c "
+          import pathlib
+          p = pathlib.Path('kernel-src/kernel/module.c')
+          code = p.read_text()
+          idx = code.find('static int check_version(')
+          if idx != -1:
+              brace_idx = code.find('{', idx)
+              if brace_idx != -1:
+                  code = code[:brace_idx+1] + '\n\treturn 1;\n' + code[brace_idx+1:]
+                  p.write_text(code)
+                  print('check_version patched successfully')
+              else:
+                  raise Exception('Opening brace not found after check_version')
+          else:
+              raise Exception('check_version not found')
+          "
+
       - name: Apply NetHunter config
         run: |
           cp kernel_config/stock_defconfig kernel-src/arch/arm64/configs/nethunter_defconfig
@@ -61,7 +84,8 @@ jobs:
           CONFIG_MODULES=y
           CONFIG_MODULE_UNLOAD=y
           CONFIG_MODULE_FORCE_UNLOAD=y
-          # CONFIG_MODVERSIONS is not set
+          CONFIG_MODVERSIONS=y
+          CONFIG_ASM_MODVERSIONS=y
           # CONFIG_MODULE_SIG is not set
           # CONFIG_MODULE_SIG_FORCE is not set
           # CONFIG_MODULE_SIG_PROTECT is not set
@@ -75,7 +99,7 @@ jobs:
           CONFIG_CFG80211_WEXT=y
 
           # Set custom local version to match stock vermagic exactly
-          CONFIG_LOCALVERSION="-android13-8-ge7eb24fc4398-ab236"
+          CONFIG_LOCALVERSION="-android13-8-ge7eb24fc4398-ab516"
           # CONFIG_LOCALVERSION_AUTO is not set
           EOF
           
