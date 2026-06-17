@@ -8,135 +8,120 @@ on:
 jobs:
   build:
     runs-on: ubuntu-22.04
-    
+
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    - name: Install dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y \
-          git bc bison flex libssl-dev \
-          make gcc build-essential \
-          gcc-aarch64-linux-gnu \
-          binutils-aarch64-linux-gnu \
-          libncurses-dev libelf-dev \
-          python3 python3-pip \
-          zip unzip cpio \
-          device-tree-compiler
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            git bc bison flex libssl-dev \
+            make gcc build-essential \
+            gcc-aarch64-linux-gnu \
+            binutils-aarch64-linux-gnu \
+            libncurses-dev libelf-dev \
+            python3 python3-pip \
+            zip unzip cpio pahole \
+            device-tree-compiler
 
-    - name: Clone Clang toolchain
-      run: |
-        git clone https://gitlab.com/ThankYouMario/android_prebuilts_clang-standalone/ \
-          -b 14 --depth=1 clang
+      - name: Clone Clang toolchain
+        run: |
+          git clone https://gitlab.com/ThankYouMario/android_prebuilts_clang-standalone/ \
+            -b 14 --depth=1 clang
 
-    - name: Clone GKI 5.15 Common Kernel source
-      run: |
-        git clone https://android.googlesource.com/kernel/common \
-          -b android13-5.15.178_r00 --depth=1 kernel-src
+      - name: Clone GKI 5.15 Common Kernel source
+        run: |
+          git clone https://android.googlesource.com/kernel/common \
+            -b android13-5.15.178_r00 --depth=1 kernel-src
 
-    - name: Apply NetHunter WiFi config additions
-      run: |
-        # Copy stock config from repository to kernel source
-        cp kernel_config/stock_defconfig kernel-src/arch/arm64/configs/stock_defconfig
-        # Append NetHunter options to stock defconfig
-        cat >> kernel-src/arch/arm64/configs/stock_defconfig << 'EOF'
+      - name: Apply NetHunter config
+        run: |
+          cp kernel_config/stock_defconfig kernel-src/arch/arm64/configs/nethunter_defconfig
+          cat >> kernel-src/arch/arm64/configs/nethunter_defconfig << 'EOF'
 
-        # NetHunter WiFi Stack
-        CONFIG_CFG80211=m
-        CONFIG_MAC80211=m
-        CONFIG_MAC80211_HAS_RC=y
-        CONFIG_WLAN=y
+          # NetHunter WiFi Stack
+          CONFIG_CFG80211=y
+          CONFIG_MAC80211=y
+          CONFIG_MAC80211_HAS_RC=y
+          CONFIG_WLAN=y
 
-        # Atheros AR9271 (your adapter)
-        CONFIG_WLAN_VENDOR_ATH=y
-        CONFIG_ATH_COMMON=m
-        CONFIG_ATH9K_HW=m
-        CONFIG_ATH9K_COMMON=m
-        CONFIG_ATH9K_COMMON_DEBUG=y
-        CONFIG_ATH9K_HTC=m
-        CONFIG_ATH9K_HTC_DEBUGFS=y
+          # Atheros AR9271
+          CONFIG_WLAN_VENDOR_ATH=y
+          CONFIG_ATH_COMMON=y
+          CONFIG_ATH9K_HW=y
+          CONFIG_ATH9K_COMMON=y
+          CONFIG_ATH9K_HTC=y
 
-        # RTL8188 (alternative adapter support)
-        CONFIG_WLAN_VENDOR_REALTEK=y
+          # Realtek
+          CONFIG_WLAN_VENDOR_REALTEK=y
 
-        # Module support (critical — allows .ko loading)
-        CONFIG_MODULES=y
-        CONFIG_MODULE_UNLOAD=y
-        CONFIG_MODULE_FORCE_UNLOAD=y
-        # CONFIG_MODVERSIONS is not set
-        # CONFIG_MODULE_SIG is not set
-        # CONFIG_MODULE_SIG_FORCE is not set
-        # CONFIG_MODULE_SIG_PROTECT is not set
-        CONFIG_MODULE_SRCVERSION_ALL=y
+          # Module support
+          CONFIG_MODULES=y
+          CONFIG_MODULE_UNLOAD=y
+          CONFIG_MODULE_FORCE_UNLOAD=y
+          # CONFIG_MODVERSIONS is not set
+          # CONFIG_MODULE_SIG is not set
+          # CONFIG_MODULE_SIG_FORCE is not set
+          # CONFIG_MODULE_SIG_PROTECT is not set
 
-        # USB WiFi firmware loading
-        CONFIG_FW_LOADER=y
-        CONFIG_FW_LOADER_USER_HELPER=y
+          # USB
+          CONFIG_FW_LOADER=y
+          CONFIG_USB_USBNET=y
 
-        # USB networking base
-        CONFIG_USB_USBNET=y
-        CONFIG_USB_NET_CDCETHER=y
+          # 802.11 injection
+          CONFIG_MAC80211_MESH=y
+          CONFIG_CFG80211_WEXT=y
 
-        # 802.11 injection support
-        CONFIG_MAC80211_MESH=y
-        CONFIG_CFG80211_WEXT=y
+          # Set custom local version to match stock vermagic exactly
+          CONFIG_LOCALVERSION="-android13-8-ge7eb24fc4398-ab236"
+          # CONFIG_LOCALVERSION_AUTO is not set
+          EOF
+          
+          echo "NetHunter GKI config applied"
 
-        # Disable BTF to avoid pahole requirements
-        # CONFIG_DEBUG_INFO_BTF is not set
+      - name: Build Kernel
+        run: |
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export PATH=$(pwd)/clang/bin:$PATH
 
-        # Set custom local version to match stock vermagic exactly
-        CONFIG_LOCALVERSION="-android13-8-ge7eb24fc4398-ab236"
-        # CONFIG_LOCALVERSION_AUTO is not set
-        EOF
-        
-        echo "NetHunter GKI config applied"
+          cd kernel-src
 
-    - name: Build GKI Kernel
-      run: |
-        export ARCH=arm64
-        export SUBARCH=arm64
-        export PATH=$(pwd)/clang/bin:$PATH
-        
-        cd kernel-src
-        
-        # Load defconfig
-        make O=out ARCH=arm64 stock_defconfig
-        
-        # Compile
-        make O=out ARCH=arm64 \
-          CC=clang \
-          CLANG_TRIPLE=aarch64-linux-gnu- \
-          CROSS_COMPILE=aarch64-linux-gnu- \
-          LLVM=1 \
-          LLVM_IAS=1 \
-          KCFLAGS="-Wno-error" \
-          -j$(nproc) 2>&1 | tee ../build.log
-        
-        echo "Build completed"
-        ls out/arch/arm64/boot/
-        
-        # Copy compiled kernel modules (.ko files)
-        mkdir -p ../modules
-        find out/ -name "*.ko" -exec cp {} ../modules/ \;
-        echo "Modules copied:"
-        ls ../modules/
+          make O=out ARCH=arm64 nethunter_defconfig
 
-    - name: Upload GKI kernel and modules
-      uses: actions/upload-artifact@v4
-      with:
-        name: kernel-nethunter-rmx3830
-        path: |
-          kernel-src/out/arch/arm64/boot/Image
-          modules/*.ko
-          build.log
-        retention-days: 7
+          make O=out ARCH=arm64 \
+            CC=clang \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            KCFLAGS="-Wno-error" \
+            -j$(nproc) 2>&1 | tee ../build.log
 
-    - name: Upload build log on failure
-      if: failure()
-      uses: actions/upload-artifact@v4
-      with:
-        name: build-log-failure
-        path: build.log
-        retention-days: 7
+          echo "=== Build done ==="
+          ls out/arch/arm64/boot/
+
+      - name: Package kernel
+        run: |
+          mkdir -p artifact
+          cp kernel-src/out/arch/arm64/boot/Image artifact/
+          find kernel-src/out/ -name "*.ko" -exec cp {} artifact/ \;
+          echo "Artifacts:"
+          ls artifact/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-nethunter-rmx3830
+          path: artifact/
+          retention-days: 7
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-failure
+          path: build.log
+          retention-days: 7
