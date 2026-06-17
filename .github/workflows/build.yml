@@ -45,6 +45,9 @@ jobs:
         run: |
           cat >> arch/arm64/configs/sprd_gki_defconfig << 'EOF'
 
+          # Fix Android KABI size alignment by enabling vendor/OEM data array
+          CONFIG_ANDROID_VENDOR_OEM_DATA=y
+
           # NetHunter WiFi drivers - as modules to keep Image size near stock
           CONFIG_CFG80211=m
           CONFIG_MAC80211=m
