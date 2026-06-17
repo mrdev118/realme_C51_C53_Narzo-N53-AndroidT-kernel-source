@@ -34,9 +34,7 @@ jobs:
     - name: Clone GKI 5.15 Common Kernel source
       run: |
         git clone https://android.googlesource.com/kernel/common \
-          -b android13-5.15 --single-branch kernel-src
-        cd kernel-src
-        git checkout e7eb24fc4398
+          -b android13-5.15.178_r00 --depth=1 kernel-src
 
     - name: Apply NetHunter WiFi config additions
       run: |
