@@ -38,8 +38,10 @@ jobs:
 
     - name: Apply NetHunter WiFi config additions
       run: |
-        # Append NetHunter options to GKI defconfig
-        cat >> kernel-src/arch/arm64/configs/gki_defconfig << 'EOF'
+        # Copy stock config from repository to kernel source
+        cp kernel_config/stock_defconfig kernel-src/arch/arm64/configs/stock_defconfig
+        # Append NetHunter options to stock defconfig
+        cat >> kernel-src/arch/arm64/configs/stock_defconfig << 'EOF'
 
         # NetHunter WiFi Stack
         CONFIG_CFG80211=m
@@ -93,7 +95,7 @@ jobs:
         cd kernel-src
         
         # Load defconfig
-        make O=out ARCH=arm64 gki_defconfig
+        make O=out ARCH=arm64 stock_defconfig
         
         # Compile
         make O=out ARCH=arm64 \
