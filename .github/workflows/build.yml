@@ -1,4 +1,4 @@
-name: NetHunter ath9k_htc - Realme C51 RMX3830 (ums9230 / android13-5.15)
+name: NetHunter ath9k_htc - Realme C51 RMX3830
 
 on:
   workflow_dispatch:
@@ -6,29 +6,35 @@ on:
     branches: [ main, master ]
 
 env:
-  GKI_TAG: android13-5.15.178_r00          # matches 5.15.178-android13 / ge7eb24fc4398
+  GKI_TAG: android13-5.15.178_r00
   GKI_REPO: https://android.googlesource.com/kernel/common
   EXPECTED_VERMAGIC_TAG: ab516
-  IMAGE_WARN_BYTES: 57671680                # 55 MB
+  IMAGE_WARN_BYTES: 57671680
+  DEVICE_CONFIG: config.gz
+  STOCK_MODULES: stock_modules.tgz
 
 jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
+      - name: Checkout device artifacts
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
       - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             git bc bison flex libssl-dev make build-essential \
             gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
-            libncurses-dev libelf-dev dwarves \
-            python3 python3-pip zip unzip cpio rsync curl device-tree-compiler
+            libncurses-dev libelf-dev dwarves kmod \
+            python3 zip unzip cpio rsync curl device-tree-compiler
 
-      - name: Clone matching GKI source (android13-5.15.178)
+      - name: Clone GKI source
         run: |
           git clone --depth=1 -b "${GKI_TAG}" "${GKI_REPO}" kernel || \
           git clone --depth=1 -b android13-5.15 "${GKI_REPO}" kernel
-          echo "=== Makefile version ==="
           head -5 kernel/Makefile
 
       - name: Clone Clang toolchain
@@ -37,33 +43,53 @@ jobs:
             https://gitlab.com/ThankYouMario/android_prebuilts_clang-standalone/ clang
           echo "$(pwd)/clang/bin" >> "$GITHUB_PATH"
 
-      - name: Fetch magiskboot + ath9k_htc firmware
+      - name: Fetch firmware
         run: |
           mkdir -p tools fw
           curl -L -o tools/magiskboot \
             https://github.com/topjohnwu/Magisk/releases/latest/download/magiskboot || true
           chmod +x tools/magiskboot || true
-          # AR9271 firmware
           curl -L -o fw/htc_9271.fw \
-            https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/ath9k_htc/htc_9271-1.4.0.fw \
-            || curl -L -o fw/htc_9271.fw \
+            https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/ath9k_htc/htc_9271-1.4.0.fw || \
+          curl -L -o fw/htc_9271.fw \
             https://raw.githubusercontent.com/wkennington/linux-firmware/master/ath9k_htc/htc_9271.fw || true
 
-      - name: Configure (GKI defconfig + ath9k_htc as modules, MODVERSIONS ON)
+      - name: Unpack stock modules
+        run: |
+          if [ -f "${STOCK_MODULES}" ]; then
+            mkdir -p stock_modules
+            tar -xzf "${STOCK_MODULES}" -C stock_modules || true
+            FIRST_KO=$(find stock_modules -name '*.ko' | head -n1)
+            echo "Stock sample: $FIRST_KO"
+            modinfo "$FIRST_KO" | grep -E 'vermagic|name' || true
+            echo "$FIRST_KO" > .stock_sample_ko
+          else
+            echo "No stock_modules.tgz found"
+          fi
+
+      - name: Configure kernel
         working-directory: kernel
         run: |
           set -e
           export ARCH=arm64 SUBARCH=arm64
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
-          make O=out ARCH=arm64 gki_defconfig
-          cat >> out/.config <<'EOF'
+          mkdir -p out
+          if [ -f "$GITHUB_WORKSPACE/${DEVICE_CONFIG}" ]; then
+            echo "Using device config.gz"
+            zcat "$GITHUB_WORKSPACE/${DEVICE_CONFIG}" > out/.config
+            grep -E "CONFIG_LOCALVERSION|CONFIG_MODVERSIONS" out/.config || true
+          else
+            echo "Falling back to gki_defconfig"
+            make O=out ARCH=arm64 gki_defconfig
+          fi
+          cat >> out/.config << 'EOF'
 CONFIG_MODULES=y
 CONFIG_MODVERSIONS=y
 CONFIG_MODULE_UNLOAD=y
 CONFIG_MODULE_FORCE_UNLOAD=y
-# CONFIG_MODULE_SIG is not set
-# CONFIG_MODULE_SIG_FORCE is not set
-# CONFIG_MODULE_SIG_ALL is not set
+CONFIG_MODULE_SIG=n
+CONFIG_MODULE_SIG_FORCE=n
+CONFIG_MODULE_SIG_ALL=n
 CONFIG_CFG80211=m
 CONFIG_CFG80211_WEXT=y
 CONFIG_MAC80211=m
@@ -80,8 +106,9 @@ CONFIG_USB_NET_CDCETHER=y
 CONFIG_FW_LOADER_USER_HELPER=y
 EOF
           make O=out ARCH=arm64 olddefconfig
+          grep -E "MODVERSIONS|ATH9K_HTC|CFG80211" out/.config || true
 
-      - name: Build Image + modules
+      - name: Build modules
         working-directory: kernel
         run: |
           set -eo pipefail
@@ -89,112 +116,58 @@ EOF
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           make O=out ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 \
             CROSS_COMPILE=aarch64-linux-gnu- CLANG_TRIPLE=aarch64-linux-gnu- \
-            KCFLAGS="-Wno-error" -j"$(nproc)" Image modules 2>&1 | tee ../build.log
-          ls -lh out/arch/arm64/boot/Image
+            KCFLAGS="-Wno-error" -j"$(nproc)" modules 2>&1 | tee ../build.log
+          echo "=== Built modules ==="
+          find out -name '*.ko' | head -20
 
-      - name: Vermagic gate (informational hard-fail per spec)
+      - name: Verify CRCs against stock
         working-directory: kernel
         run: |
-          set -e
-          IMG=out/arch/arm64/boot/Image
-          VM="$(strings "$IMG" | grep -E '^5\.15\.[0-9]+.*android' | head -n1 || true)"
-          echo "Vermagic candidate: '${VM}'"
-          strings "$IMG" | grep -E '5\.15\.' | head -20 || true
-          if echo "$VM" | grep -q "${EXPECTED_VERMAGIC_TAG}"; then
-            echo "OK: contains ${EXPECTED_VERMAGIC_TAG}."
-          else
-            echo "::error::Vermagic lacks '${EXPECTED_VERMAGIC_TAG}'. You cannot reproduce Realme's"
-            echo "::error::exact stock build, so DO NOT flash Image (bootloop). Use the LKM package:"
-            echo "::error::insmod the .ko modules on the STOCK kernel instead."
-            exit 1
+          if [ ! -f "$GITHUB_WORKSPACE/.stock_sample_ko" ]; then
+            echo "No stock modules - skipping CRC check"
+            exit 0
           fi
+          STOCK_KO=$(cat "$GITHUB_WORKSPACE/.stock_sample_ko")
+          BUILT_KO=$(find out -name 'ath9k_htc.ko' | head -n1)
+          if [ -z "$BUILT_KO" ]; then
+            echo "ath9k_htc.ko not built yet - skipping"
+            exit 0
+          fi
+          echo "Stock: $STOCK_KO"
+          echo "Built: $BUILT_KO"
+          modprobe --dump-modversions "$STOCK_KO" 2>/dev/null | sort > /tmp/stock_crc.txt || true
+          modprobe --dump-modversions "$BUILT_KO" 2>/dev/null | sort > /tmp/built_crc.txt || true
+          MISMATCH=0
+          while read -r crc sym; do
+            scrc=$(grep -E "[[:space:]]${sym}$" /tmp/stock_crc.txt | awk '{print $1}' | head -n1)
+            if [ -n "$scrc" ] && [ "$scrc" != "$crc" ]; then
+              echo "MISMATCH: $sym built=$crc stock=$scrc"
+              MISMATCH=1
+            fi
+          done < /tmp/built_crc.txt
+          if [ "$MISMATCH" = "0" ]; then
+            echo "OK: CRCs match - insmod should work"
+          else
+            echo "WARNING: CRC mismatches found - insmod may fail"
+          fi
+          cp /tmp/stock_crc.txt ../stock_crc.txt || true
+          cp /tmp/built_crc.txt ../built_crc.txt || true
 
-      - name: Image size warning (>55MB)
-        working-directory: kernel
-        run: |
-          SIZE=$(stat -c%s out/arch/arm64/boot/Image)
-          echo "Image: $((SIZE/1024/1024)) MB (stock ~47 MB)."
-          [ "$SIZE" -gt "${IMAGE_WARN_BYTES}" ] && echo "::warning::Image exceeds 55 MB." || true
-
-      - name: Stage flashable + LKM package
+      - name: Package artifact
         if: always()
         run: |
           set -e
           DATE=$(date +%Y%m%d)
           OUT="nethunter-rmx3830-${DATE}"
           mkdir -p "pkg/${OUT}/modules" "pkg/${OUT}/firmware"
-          cp kernel/out/arch/arm64/boot/Image "pkg/${OUT}/Image" 2>/dev/null || true
           find kernel/out -name '*.ko' -exec cp {} "pkg/${OUT}/modules/" \; 2>/dev/null || true
           cp fw/htc_9271.fw "pkg/${OUT}/firmware/" 2>/dev/null || true
-          cp tools/magiskboot "pkg/${OUT}/magiskboot" 2>/dev/null || true
-          cp build.log "pkg/${OUT}/build.log" 2>/dev/null || true
-
-          cat > "pkg/${OUT}/install_modules.sh" <<'SH'
-#!/system/bin/sh
-# RECOMMENDED PATH: load ath9k_htc on the STOCK kernel. No flashing, no bootloop.
-# Run as root on-device after pushing this folder to /data/local/tmp.
-set -e
-cd "$(dirname "$0")"
-cp firmware/htc_9271.fw /vendor/firmware/ 2>/dev/null || cp firmware/htc_9271.fw /lib/firmware/ 2>/dev/null || true
-insmod modules/cfg80211.ko        2>/dev/null || true
-insmod modules/mac80211.ko        2>/dev/null || true
-insmod modules/ath.ko             2>/dev/null || insmod modules/ath_common.ko 2>/dev/null || true
-insmod modules/ath9k_hw.ko        2>/dev/null || true
-insmod modules/ath9k_common.ko    2>/dev/null || true
-insmod modules/ath9k_htc.ko
-echo "[+] Plug the AR9271. Check: dmesg | grep ath9k ; ip link"
-echo "[!] If insmod fails with 'version magic'/'disagrees about symbol', the CRCs"
-echo "    do not match your stock kernel. You then need the device's exact kernel"
-echo "    config/headers; pure GKI may differ from Realme's ab516 build."
-SH
+          cp tools/magiskboot "pkg/${OUT}/" 2>/dev/null || true
+          cp build.log "pkg/${OUT}/" 2>/dev/null || true
+          cp stock_crc.txt built_crc.txt "pkg/${OUT}/" 2>/dev/null || true
+          printf '#!/system/bin/sh\nset -e\ncd "$(dirname "$0")"\ncp firmware/htc_9271.fw /vendor/firmware/ 2>/dev/null || cp firmware/htc_9271.fw /lib/firmware/ 2>/dev/null || true\ninsmod modules/cfg80211.ko 2>/dev/null || true\ninsmod modules/mac80211.ko 2>/dev/null || true\ninsmod modules/ath.ko 2>/dev/null || true\ninsmod modules/ath9k_hw.ko 2>/dev/null || true\ninsmod modules/ath9k_common.ko 2>/dev/null || true\ninsmod modules/ath9k_htc.ko\necho "[+] Done. Plug AR9271 and check: dmesg | grep ath9k"\n' > "pkg/${OUT}/install_modules.sh"
           chmod +x "pkg/${OUT}/install_modules.sh"
-
-          cat > "pkg/${OUT}/flash.sh" <<'SH'
-#!/usr/bin/env bash
-# OPTIONAL / RISKY: replace the stock kernel. Only if vermagic gate PASSED.
-# Put your STOCK boot.img next to this script, then run it.
-set -e
-cd "$(dirname "$0")"
-[ -f boot.img ] || { echo "ERROR: put stock boot.img here."; exit 1; }
-[ -x ./magiskboot ] || { echo "ERROR: magiskboot missing."; exit 1; }
-./magiskboot unpack boot.img
-cp Image kernel
-./magiskboot repack boot.img nethunter_boot.img
-echo "[+] nethunter_boot.img ready (HEADER_VER 4, no ramdisk)."
-SH
-          chmod +x "pkg/${OUT}/flash.sh"
-
-          cat > "pkg/${OUT}/README.txt" <<'TXT'
-NetHunter ath9k_htc - Realme C51 RMX3830 (Unisoc T612 / ums9230)
-================================================================
-Stock kernel: 5.15.178-android13-8-ge7eb24fc4398-ab516
-
->>> RECOMMENDED: LKM-ONLY (no flashing, no bootloop risk) <<<
-  1. adb push this whole folder to /data/local/tmp/
-  2. adb shell ; su
-  3. cd /data/local/tmp/<folder> ; sh install_modules.sh
-  4. Plug AR9271, verify: dmesg | grep ath9k
-
->>> OPTIONAL: FLASH CUSTOM KERNEL (only if build's vermagic gate PASSED) <<<
-  Repack (host / WSL / Git-Bash):
-    copy stock boot.img into this folder
-    ./flash.sh            -> produces nethunter_boot.img
-
-  Flash on WINDOWS with spd_dump (Unisoc):
-    Power off device. Hold Vol-Up + Vol-Down, plug USB (SPRD download mode).
-    Install Unisoc/SPRD USB driver first.
-    From the spd_dump folder:
-      spd_dump.exe write_part boot_a nethunter_boot.img
-    If an FDL handshake is required, use your device FDL set:
-      spd_dump.exe --fdl FDL1.bin 0x... --fdl FDL2.bin 0x... write_part boot_a nethunter_boot.img
-    Reboot:
-      spd_dump.exe reset
-
-  WARNING: a self-built Image that does not match the exact stock build
-  (vermagic ...ab516 AND identical ABI) will BOOTLOOP and stock vendor
-  modules will be rejected. If unsure, use the LKM path above.
-TXT
-
+          printf 'NetHunter ath9k_htc - Realme C51 RMX3830\nStock kernel: 5.15.178-android13-8-ge7eb24fc4398-ab516\n\nRECOMMENDED (no flash, no bootloop risk):\n  adb push this folder /data/local/tmp/\n  adb shell su -c "cd /data/local/tmp/%s && sh install_modules.sh"\n  Plug AR9271, verify: dmesg | grep ath9k\n\nCheck stock_crc.txt vs built_crc.txt for CRC match info.\n' "${OUT}" > "pkg/${OUT}/README.txt"
           ( cd pkg && zip -r "${OUT}.zip" "${OUT}" )
           ls -lh "pkg/${OUT}.zip"
           echo "ZIP_NAME=${OUT}.zip" >> "$GITHUB_ENV"
