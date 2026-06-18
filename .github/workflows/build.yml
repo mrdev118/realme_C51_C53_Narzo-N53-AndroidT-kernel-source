@@ -8,8 +8,6 @@ on:
 env:
   GKI_TAG: android13-5.15.178_r00
   GKI_REPO: https://android.googlesource.com/kernel/common
-  IMAGE_WARN_BYTES: 57671680
-  DEVICE_CONFIG: config.gz
   STOCK_MODULES: stock_modules.tgz
 
 jobs:
@@ -68,14 +66,8 @@ jobs:
           export ARCH=arm64 SUBARCH=arm64
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           mkdir -p out
-          if [ -f "$GITHUB_WORKSPACE/${DEVICE_CONFIG}" ]; then
-            echo "Using device config.gz"
-            zcat "$GITHUB_WORKSPACE/${DEVICE_CONFIG}" > out/.config
-            grep -E "CONFIG_LOCALVERSION|CONFIG_MODVERSIONS" out/.config || true
-          else
-            echo "Falling back to gki_defconfig"
-            make O=out ARCH=arm64 gki_defconfig
-          fi
+          echo "Using gki_defconfig"
+          make O=out ARCH=arm64 gki_defconfig
           cat /tmp/nethunter_additions.config >> out/.config
           make O=out ARCH=arm64 olddefconfig
           grep -E "MODVERSIONS|ATH9K_HTC|CFG80211" out/.config || true
