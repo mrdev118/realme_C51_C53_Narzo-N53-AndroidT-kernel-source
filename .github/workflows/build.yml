@@ -1,122 +1,208 @@
-name: Build NetHunter Kernel - Realme C51
+name: NetHunter ath9k_htc - Realme C51 RMX3830 (ums9230 / android13-5.15)
 
 on:
   workflow_dispatch:
   push:
     branches: [ main, master ]
 
+env:
+  GKI_TAG: android13-5.15.178_r00          # matches 5.15.178-android13 / ge7eb24fc4398
+  GKI_REPO: https://android.googlesource.com/kernel/common
+  EXPECTED_VERMAGIC_TAG: ab516
+  IMAGE_WARN_BYTES: 57671680                # 55 MB
+
 jobs:
   build:
     runs-on: ubuntu-22.04
-
     steps:
-      - name: Checkout Realme kernel source
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
       - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            git bc bison flex libssl-dev \
-            make gcc build-essential \
-            gcc-aarch64-linux-gnu \
-            binutils-aarch64-linux-gnu \
-            libncurses-dev libelf-dev \
-            python3 python3-pip \
-            zip unzip cpio \
-            device-tree-compiler
+            git bc bison flex libssl-dev make build-essential \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+            libncurses-dev libelf-dev dwarves \
+            python3 python3-pip zip unzip cpio rsync curl device-tree-compiler
+
+      - name: Clone matching GKI source (android13-5.15.178)
+        run: |
+          git clone --depth=1 -b "${GKI_TAG}" "${GKI_REPO}" kernel || \
+          git clone --depth=1 -b android13-5.15 "${GKI_REPO}" kernel
+          echo "=== Makefile version ==="
+          head -5 kernel/Makefile
 
       - name: Clone Clang toolchain
         run: |
-          git clone https://gitlab.com/ThankYouMario/android_prebuilts_clang-standalone/ \
-            -b 14 --depth=1 clang
+          git clone --depth=1 -b 14 \
+            https://gitlab.com/ThankYouMario/android_prebuilts_clang-standalone/ clang
+          echo "$(pwd)/clang/bin" >> "$GITHUB_PATH"
 
-      - name: Confirm defconfig exists
+      - name: Fetch magiskboot + ath9k_htc firmware
         run: |
-          echo "=== Available defconfigs ==="
-          ls arch/arm64/configs/
-          echo ""
-          echo "=== Checking for sprd_gki_defconfig ==="
-          ls arch/arm64/configs/sprd_gki_defconfig && echo "FOUND" || echo "NOT FOUND - check ls output above"
+          mkdir -p tools fw
+          curl -L -o tools/magiskboot \
+            https://github.com/topjohnwu/Magisk/releases/latest/download/magiskboot || true
+          chmod +x tools/magiskboot || true
+          # AR9271 firmware
+          curl -L -o fw/htc_9271.fw \
+            https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/ath9k_htc/htc_9271-1.4.0.fw \
+            || curl -L -o fw/htc_9271.fw \
+            https://raw.githubusercontent.com/wkennington/linux-firmware/master/ath9k_htc/htc_9271.fw || true
 
-      - name: Apply NetHunter additions
+      - name: Configure (GKI defconfig + ath9k_htc as modules, MODVERSIONS ON)
+        working-directory: kernel
         run: |
-          cat >> arch/arm64/configs/sprd_gki_defconfig << 'EOF'
+          set -e
+          export ARCH=arm64 SUBARCH=arm64
+          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
+          make O=out ARCH=arm64 gki_defconfig
+          cat >> out/.config <<'EOF'
+CONFIG_MODULES=y
+CONFIG_MODVERSIONS=y
+CONFIG_MODULE_UNLOAD=y
+CONFIG_MODULE_FORCE_UNLOAD=y
+# CONFIG_MODULE_SIG is not set
+# CONFIG_MODULE_SIG_FORCE is not set
+# CONFIG_MODULE_SIG_ALL is not set
+CONFIG_CFG80211=m
+CONFIG_CFG80211_WEXT=y
+CONFIG_MAC80211=m
+CONFIG_MAC80211_HAS_RC=y
+CONFIG_MAC80211_MESH=y
+CONFIG_WLAN=y
+CONFIG_WLAN_VENDOR_ATH=y
+CONFIG_ATH_COMMON=m
+CONFIG_ATH9K_HW=m
+CONFIG_ATH9K_COMMON=m
+CONFIG_ATH9K_HTC=m
+CONFIG_USB_USBNET=y
+CONFIG_USB_NET_CDCETHER=y
+CONFIG_FW_LOADER_USER_HELPER=y
+EOF
+          make O=out ARCH=arm64 olddefconfig
 
-          # Fix Android KABI size alignment by enabling vendor/OEM data array
-          CONFIG_ANDROID_VENDOR_OEM_DATA=y
-
-          # NetHunter WiFi drivers - as modules to keep Image size near stock
-          CONFIG_CFG80211=m
-          CONFIG_MAC80211=m
-          CONFIG_MAC80211_HAS_RC=y
-          CONFIG_WLAN=y
-          CONFIG_WLAN_VENDOR_ATH=y
-          CONFIG_ATH_COMMON=m
-          CONFIG_ATH9K_HW=m
-          CONFIG_ATH9K_COMMON=m
-          CONFIG_ATH9K_HTC=m
-          CONFIG_WLAN_VENDOR_REALTEK=y
-          CONFIG_MAC80211_MESH=y
-          CONFIG_CFG80211_WEXT=y
-
-          # Module loading - disable sig checks
-          CONFIG_MODULE_UNLOAD=y
-          CONFIG_MODULE_FORCE_UNLOAD=y
-          # CONFIG_MODULE_SIG is not set
-          # CONFIG_MODULE_SIG_FORCE is not set
-          # CONFIG_MODULE_SIG_PROTECT is not set
-
-          # USB
-          CONFIG_USB_USBNET=y
-          CONFIG_USB_NET_CDCETHER=y
-          CONFIG_FW_LOADER_USER_HELPER=y
-          EOF
-
-      - name: Build kernel
+      - name: Build Image + modules
+        working-directory: kernel
         run: |
-          export ARCH=arm64
-          export SUBARCH=arm64
-          export PATH=$(pwd)/clang/bin:$PATH
-
-          make O=out ARCH=arm64 sprd_gki_defconfig
-
-          make O=out ARCH=arm64 \
-            CC=clang \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            LLVM=1 \
-            LLVM_IAS=1 \
-            KCFLAGS="-Wno-error" \
-            -j$(nproc) 2>&1 | tee build.log
-
-          echo "=== Image size (stock was 47MB) ==="
+          set -eo pipefail
+          export ARCH=arm64 SUBARCH=arm64
+          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
+          make O=out ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 \
+            CROSS_COMPILE=aarch64-linux-gnu- CLANG_TRIPLE=aarch64-linux-gnu- \
+            KCFLAGS="-Wno-error" -j"$(nproc)" Image modules 2>&1 | tee ../build.log
           ls -lh out/arch/arm64/boot/Image
 
-          echo "=== Vermagic ==="
-          strings out/arch/arm64/boot/Image | grep "5.15"
-
-      - name: Collect artifacts
+      - name: Vermagic gate (informational hard-fail per spec)
+        working-directory: kernel
         run: |
-          mkdir -p artifact
-          cp out/arch/arm64/boot/Image artifact/
-          find out/ -name "*.ko" -exec cp {} artifact/ \;
-          cp build.log artifact/
-          ls -lh artifact/
+          set -e
+          IMG=out/arch/arm64/boot/Image
+          VM="$(strings "$IMG" | grep -E '^5\.15\.[0-9]+.*android' | head -n1 || true)"
+          echo "Vermagic candidate: '${VM}'"
+          strings "$IMG" | grep -E '5\.15\.' | head -20 || true
+          if echo "$VM" | grep -q "${EXPECTED_VERMAGIC_TAG}"; then
+            echo "OK: contains ${EXPECTED_VERMAGIC_TAG}."
+          else
+            echo "::error::Vermagic lacks '${EXPECTED_VERMAGIC_TAG}'. You cannot reproduce Realme's"
+            echo "::error::exact stock build, so DO NOT flash Image (bootloop). Use the LKM package:"
+            echo "::error::insmod the .ko modules on the STOCK kernel instead."
+            exit 1
+          fi
 
-      - name: Upload artifacts
+      - name: Image size warning (>55MB)
+        working-directory: kernel
+        run: |
+          SIZE=$(stat -c%s out/arch/arm64/boot/Image)
+          echo "Image: $((SIZE/1024/1024)) MB (stock ~47 MB)."
+          [ "$SIZE" -gt "${IMAGE_WARN_BYTES}" ] && echo "::warning::Image exceeds 55 MB." || true
+
+      - name: Stage flashable + LKM package
+        if: always()
+        run: |
+          set -e
+          DATE=$(date +%Y%m%d)
+          OUT="nethunter-rmx3830-${DATE}"
+          mkdir -p "pkg/${OUT}/modules" "pkg/${OUT}/firmware"
+          cp kernel/out/arch/arm64/boot/Image "pkg/${OUT}/Image" 2>/dev/null || true
+          find kernel/out -name '*.ko' -exec cp {} "pkg/${OUT}/modules/" \; 2>/dev/null || true
+          cp fw/htc_9271.fw "pkg/${OUT}/firmware/" 2>/dev/null || true
+          cp tools/magiskboot "pkg/${OUT}/magiskboot" 2>/dev/null || true
+          cp build.log "pkg/${OUT}/build.log" 2>/dev/null || true
+
+          cat > "pkg/${OUT}/install_modules.sh" <<'SH'
+#!/system/bin/sh
+# RECOMMENDED PATH: load ath9k_htc on the STOCK kernel. No flashing, no bootloop.
+# Run as root on-device after pushing this folder to /data/local/tmp.
+set -e
+cd "$(dirname "$0")"
+cp firmware/htc_9271.fw /vendor/firmware/ 2>/dev/null || cp firmware/htc_9271.fw /lib/firmware/ 2>/dev/null || true
+insmod modules/cfg80211.ko        2>/dev/null || true
+insmod modules/mac80211.ko        2>/dev/null || true
+insmod modules/ath.ko             2>/dev/null || insmod modules/ath_common.ko 2>/dev/null || true
+insmod modules/ath9k_hw.ko        2>/dev/null || true
+insmod modules/ath9k_common.ko    2>/dev/null || true
+insmod modules/ath9k_htc.ko
+echo "[+] Plug the AR9271. Check: dmesg | grep ath9k ; ip link"
+echo "[!] If insmod fails with 'version magic'/'disagrees about symbol', the CRCs"
+echo "    do not match your stock kernel. You then need the device's exact kernel"
+echo "    config/headers; pure GKI may differ from Realme's ab516 build."
+SH
+          chmod +x "pkg/${OUT}/install_modules.sh"
+
+          cat > "pkg/${OUT}/flash.sh" <<'SH'
+#!/usr/bin/env bash
+# OPTIONAL / RISKY: replace the stock kernel. Only if vermagic gate PASSED.
+# Put your STOCK boot.img next to this script, then run it.
+set -e
+cd "$(dirname "$0")"
+[ -f boot.img ] || { echo "ERROR: put stock boot.img here."; exit 1; }
+[ -x ./magiskboot ] || { echo "ERROR: magiskboot missing."; exit 1; }
+./magiskboot unpack boot.img
+cp Image kernel
+./magiskboot repack boot.img nethunter_boot.img
+echo "[+] nethunter_boot.img ready (HEADER_VER 4, no ramdisk)."
+SH
+          chmod +x "pkg/${OUT}/flash.sh"
+
+          cat > "pkg/${OUT}/README.txt" <<'TXT'
+NetHunter ath9k_htc - Realme C51 RMX3830 (Unisoc T612 / ums9230)
+================================================================
+Stock kernel: 5.15.178-android13-8-ge7eb24fc4398-ab516
+
+>>> RECOMMENDED: LKM-ONLY (no flashing, no bootloop risk) <<<
+  1. adb push this whole folder to /data/local/tmp/
+  2. adb shell ; su
+  3. cd /data/local/tmp/<folder> ; sh install_modules.sh
+  4. Plug AR9271, verify: dmesg | grep ath9k
+
+>>> OPTIONAL: FLASH CUSTOM KERNEL (only if build's vermagic gate PASSED) <<<
+  Repack (host / WSL / Git-Bash):
+    copy stock boot.img into this folder
+    ./flash.sh            -> produces nethunter_boot.img
+
+  Flash on WINDOWS with spd_dump (Unisoc):
+    Power off device. Hold Vol-Up + Vol-Down, plug USB (SPRD download mode).
+    Install Unisoc/SPRD USB driver first.
+    From the spd_dump folder:
+      spd_dump.exe write_part boot_a nethunter_boot.img
+    If an FDL handshake is required, use your device FDL set:
+      spd_dump.exe --fdl FDL1.bin 0x... --fdl FDL2.bin 0x... write_part boot_a nethunter_boot.img
+    Reboot:
+      spd_dump.exe reset
+
+  WARNING: a self-built Image that does not match the exact stock build
+  (vermagic ...ab516 AND identical ABI) will BOOTLOOP and stock vendor
+  modules will be rejected. If unsure, use the LKM path above.
+TXT
+
+          ( cd pkg && zip -r "${OUT}.zip" "${OUT}" )
+          ls -lh "pkg/${OUT}.zip"
+          echo "ZIP_NAME=${OUT}.zip" >> "$GITHUB_ENV"
+
+      - name: Upload artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-nethunter-rmx3830
-          path: artifact/
-          retention-days: 7
-
-      - name: Upload build log on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-log-failure
-          path: build.log
+          name: nethunter-rmx3830
+          path: pkg/${{ env.ZIP_NAME }}
           retention-days: 7
