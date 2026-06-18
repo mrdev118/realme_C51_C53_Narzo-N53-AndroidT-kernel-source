@@ -28,6 +28,7 @@ jobs:
 
       - name: Clone GKI source
         run: |
+          rm -rf kernel
           git clone --depth=1 -b "${GKI_TAG}" "${GKI_REPO}" kernel || git clone --depth=1 -b android13-5.15 "${GKI_REPO}" kernel
           head -5 kernel/Makefile
 
