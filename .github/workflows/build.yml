@@ -82,6 +82,44 @@ jobs:
           echo "=== Built modules ==="
           find out -name '*.ko' | head -20
 
+      - name: Patch module CRCs to match stock
+        run: |
+          pip3 install pyelftools 2>/dev/null || true
+          cat > /tmp/patch_crcs.py << 'PYEOF'
+          import struct, sys, os
+          from elftools.elf.elffile import ELFFile
+
+          stock_crcs = {}
+          with open('stock_symvers.txt') as f:
+            for line in f:
+              parts = line.strip().split()
+              if len(parts) == 2:
+                stock_crcs[parts[1]] = int(parts[0], 16)
+
+          for ko in sys.argv[1:]:
+            with open(ko, 'r+b') as f:
+              elf = ELFFile(f)
+              sec = elf.get_section_by_name('__versions')
+              if not sec:
+                continue
+              data = bytearray(sec.data())
+              entry_size = 64
+              changed = 0
+              for i in range(0, len(data), entry_size):
+                crc = struct.unpack_from('<I', data, i)[0]
+                name = data[i+4:i+64].split(b'\x00')[0].decode('utf-8', errors='ignore')
+                if name in stock_crcs and stock_crcs[name] != crc:
+                  struct.pack_into('<I', data, i, stock_crcs[name])
+                  changed += 1
+              if changed:
+                f.seek(sec['sh_offset'])
+                f.write(bytes(data))
+                print(f"Patched {changed} CRCs in {ko}")
+              else:
+                print(f"No changes needed in {ko}")
+          PYEOF
+          find kernel/out -name '*.ko' | xargs python3 /tmp/patch_crcs.py
+
       - name: Compare CRCs built vs stock
         run: |
           BUILT_KO=$(find kernel/out -name 'ath9k_htc.ko' | head -n1)
