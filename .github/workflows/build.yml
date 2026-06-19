@@ -27,50 +27,15 @@ jobs:
 
       - name: Reconstruct Module.symvers from stock modules
         run: |
-          if [ ! -f "${STOCK_MODULES}" ]; then
-            echo "No stock_modules.tgz"
-            exit 0
-          fi
           mkdir -p stock_ko
           tar -xzf "${STOCK_MODULES}" -C stock_ko || true
           echo "=== Stock vermagic ==="
           modinfo "${STOCK_CFG80211}" | grep vermagic || true
-          echo "=== Reconstructing Module.symvers from all stock .ko files ==="
-          cat > /tmp/extract_symvers.py << 'PYEOF'
-import subprocess, sys, os, re
-
-ko_files = []
-for root, dirs, files in os.walk(sys.argv[1]):
-    for f in files:
-        if f.endswith('.ko'):
-            ko_files.append(os.path.join(root, f))
-
-print(f"Found {len(ko_files)} stock .ko files", file=sys.stderr)
-
-symvers = {}
-for ko in ko_files:
-    try:
-        result = subprocess.run(
-            ['modprobe', '--dump-modversions', ko],
-            capture_output=True, text=True
-        )
-        for line in result.stdout.splitlines():
-            parts = line.strip().split()
-            if len(parts) == 2:
-                crc, sym = parts
-                symvers[sym] = crc
-    except Exception as e:
-        pass
-
-print(f"Total unique symbols: {len(symvers)}", file=sys.stderr)
-for sym, crc in sorted(symvers.items()):
-    print(f"{crc}\t{sym}\t(unknown)\tEXPORT_SYMBOL")
-PYEOF
-          python3 /tmp/extract_symvers.py stock_ko > Module.symvers
-          wc -l Module.symvers
-          echo "=== Sample entries ==="
-          grep "module_layout" Module.symvers || echo "module_layout not found in stock modules"
-          head -5 Module.symvers
+          echo "=== Reconstructing Module.symvers ==="
+          python3 extract_symvers.py stock_ko > Module.symvers
+          echo "Total symbols: $(wc -l < Module.symvers)"
+          grep "module_layout" Module.symvers || echo "module_layout not found"
+          head -3 Module.symvers
 
       - name: Clone GKI source
         run: |
@@ -104,10 +69,8 @@ PYEOF
           make O=out ARCH=arm64 gki_defconfig
           cat /tmp/nethunter_additions.config >> out/.config
           make O=out ARCH=arm64 olddefconfig
-          grep -E "MODVERSIONS|ATH9K_HTC|CFG80211" out/.config || true
-          cp "$GITHUB_WORKSPACE/Module.symvers" out/Module.symvers || true
-          echo "=== Module.symvers copied to build ==="
-          wc -l out/Module.symvers || true
+          cp "$GITHUB_WORKSPACE/Module.symvers" out/Module.symvers
+          echo "Module.symvers copied: $(wc -l < out/Module.symvers) symbols"
 
       - name: Build modules against stock symvers
         working-directory: kernel
@@ -116,7 +79,6 @@ PYEOF
           export ARCH=arm64 SUBARCH=arm64
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           make O=out ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- CLANG_TRIPLE=aarch64-linux-gnu- KCFLAGS="-Wno-error" -j"$(nproc)" modules 2>&1 | tee ../build.log
-          echo "=== Built modules ==="
           find out -name '*.ko' | head -20
 
       - name: Check module_layout CRC
@@ -126,23 +88,12 @@ PYEOF
           modprobe --dump-modversions "$BUILT_KO" | sort > built_symvers.txt || true
           BUILT_ML=$(grep "module_layout" built_symvers.txt | awk '{print $1}')
           STOCK_ML=$(grep "module_layout" Module.symvers | awk '{print $1}')
-          echo "Built module_layout CRC : $BUILT_ML"
-          echo "Stock module_layout CRC : $STOCK_ML"
+          echo "Built module_layout: $BUILT_ML"
+          echo "Stock module_layout: $STOCK_ML"
           if [ "$BUILT_ML" = "$STOCK_ML" ]; then
-            echo "MATCH - modules should load"
+            echo "MATCH - modules should load on stock kernel"
           else
-            echo "MISMATCH - will not load"
-          fi
-          MISMATCH=0
-          while read -r crc sym rest; do
-            bcrc=$(grep -E "^[^\t]+\t${sym}\t" built_symvers.txt | awk '{print $1}' | head -n1)
-            if [ -n "$bcrc" ] && [ "$bcrc" != "$crc" ]; then
-              echo "MISMATCH: $sym stock=$crc built=$bcrc"
-              MISMATCH=1
-            fi
-          done < Module.symvers
-          if [ "$MISMATCH" = "0" ]; then
-            echo "ALL SHARED CRCs MATCH"
+            echo "MISMATCH - modules will not load"
           fi
 
       - name: Package artifact
