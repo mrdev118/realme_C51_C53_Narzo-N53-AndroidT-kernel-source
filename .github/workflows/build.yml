@@ -6,9 +6,8 @@ on:
     branches: [ main, master ]
 
 env:
-  GKI_TAG: android13-5.15.178_r00
   GKI_REPO: https://android.googlesource.com/kernel/common
-  STOCK_MODULES: stock_modules.tgz
+  GKI_COMMIT: e7eb24fc4398
   STOCK_CFG80211: cfg80211.ko
 
 jobs:
@@ -28,20 +27,23 @@ jobs:
       - name: Extract stock CRCs from cfg80211.ko
         run: |
           if [ -f "${STOCK_CFG80211}" ]; then
-            echo "=== Extracting stock symbol CRCs from cfg80211.ko ==="
+            echo "=== Stock vermagic ==="
+            modinfo "${STOCK_CFG80211}" | grep vermagic || true
+            echo "=== Stock CRCs ==="
             modprobe --dump-modversions "${STOCK_CFG80211}" | sort > stock_symvers.txt || true
             echo "Stock CRC count: $(wc -l < stock_symvers.txt)"
-            head -5 stock_symvers.txt
-            modinfo "${STOCK_CFG80211}" | grep vermagic || true
-          else
-            echo "No stock cfg80211.ko found"
+            grep module_layout stock_symvers.txt || true
           fi
 
-      - name: Clone GKI source
+      - name: Clone GKI source at exact Realme commit
         run: |
           rm -rf kernel
-          git clone --depth=1 -b "${GKI_TAG}" "${GKI_REPO}" kernel || git clone --depth=1 -b android13-5.15 "${GKI_REPO}" kernel
-          head -5 kernel/Makefile
+          git clone -b android13-5.15 --depth=50 "${GKI_REPO}" kernel
+          cd kernel
+          git checkout "${GKI_COMMIT}" || true
+          echo "=== Kernel commit ==="
+          git log --oneline -1
+          head -5 Makefile
 
       - name: Clone Clang toolchain
         run: |
@@ -66,7 +68,6 @@ jobs:
           export ARCH=arm64 SUBARCH=arm64
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           mkdir -p out
-          echo "Using gki_defconfig"
           make O=out ARCH=arm64 gki_defconfig
           cat /tmp/nethunter_additions.config >> out/.config
           make O=out ARCH=arm64 olddefconfig
@@ -82,6 +83,9 @@ jobs:
           echo "=== Built modules ==="
           find out -name '*.ko' | head -20
 
+<<<<<<< HEAD
+      - name: Check module_layout CRC match
+=======
       - name: Patch module CRCs to match stock
         run: |
           pip3 install pyelftools 2>/dev/null || true
@@ -121,32 +125,32 @@ jobs:
           find kernel/out -name '*.ko' | xargs python3 /tmp/patch_crcs.py
 
       - name: Compare CRCs built vs stock
+>>>>>>> 7e1b167472959f9365a9d75fc237ad44c6c16198
         run: |
           BUILT_KO=$(find kernel/out -name 'ath9k_htc.ko' | head -n1)
-          if [ -z "$BUILT_KO" ]; then
-            echo "ath9k_htc.ko not found"
-            exit 0
-          fi
-          echo "=== Built ath9k_htc.ko CRCs ==="
+          if [ -z "$BUILT_KO" ]; then exit 0; fi
           modprobe --dump-modversions "$BUILT_KO" | sort > built_symvers.txt || true
-          echo "Built CRC count: $(wc -l < built_symvers.txt)"
-          if [ -f stock_symvers.txt ] && [ -s stock_symvers.txt ]; then
-            echo "=== CRC mismatches (built vs stock) ==="
-            MISMATCH=0
-            while read -r crc sym; do
-              scrc=$(grep -E "[[:space:]]${sym}$" stock_symvers.txt | awk '{print $1}' | head -n1)
-              if [ -n "$scrc" ] && [ "$scrc" != "$crc" ]; then
-                echo "MISMATCH: $sym built=$crc stock=$scrc"
-                MISMATCH=1
-              fi
-            done < built_symvers.txt
-            if [ "$MISMATCH" = "0" ]; then
-              echo "OK: All shared symbol CRCs match - insmod should work"
-            else
-              echo "WARNING: CRC mismatches found above"
-            fi
+          echo "=== module_layout CRC comparison ==="
+          BUILT_ML=$(grep "module_layout" built_symvers.txt | awk '{print $1}')
+          STOCK_ML=$(grep "module_layout" stock_symvers.txt | awk '{print $1}')
+          echo "Built module_layout CRC: $BUILT_ML"
+          echo "Stock module_layout CRC: $STOCK_ML"
+          if [ "$BUILT_ML" = "$STOCK_ML" ]; then
+            echo "MATCH - modules should load on stock kernel"
           else
-            echo "No stock_symvers.txt - skipping comparison"
+            echo "MISMATCH - modules will not load"
+          fi
+          echo "=== All mismatches ==="
+          MISMATCH=0
+          while read -r crc sym; do
+            scrc=$(grep -E "[[:space:]]${sym}$" stock_symvers.txt | awk '{print $1}' | head -n1)
+            if [ -n "$scrc" ] && [ "$scrc" != "$crc" ]; then
+              echo "MISMATCH: $sym built=$crc stock=$scrc"
+              MISMATCH=1
+            fi
+          done < built_symvers.txt
+          if [ "$MISMATCH" = "0" ]; then
+            echo "ALL CRCs MATCH - insmod will work"
           fi
 
       - name: Package artifact
@@ -163,7 +167,7 @@ jobs:
           cp stock_symvers.txt built_symvers.txt "pkg/${OUT}/" 2>/dev/null || true
           printf '#!/system/bin/sh\nset -e\ncd "$(dirname "$0")"\ncp firmware/htc_9271.fw /vendor/firmware/ 2>/dev/null || cp firmware/htc_9271.fw /lib/firmware/ 2>/dev/null || true\ninsmod modules/cfg80211.ko 2>/dev/null || true\ninsmod modules/mac80211.ko 2>/dev/null || true\ninsmod modules/ath.ko 2>/dev/null || true\ninsmod modules/ath9k_hw.ko 2>/dev/null || true\ninsmod modules/ath9k_common.ko 2>/dev/null || true\ninsmod modules/ath9k_htc.ko\necho "[+] Done. Plug AR9271 and check: dmesg | grep ath9k"\n' > "pkg/${OUT}/install_modules.sh"
           chmod +x "pkg/${OUT}/install_modules.sh"
-          printf 'NetHunter ath9k_htc - Realme C51 RMX3830\nStock kernel: 5.15.178-android13-8-ge7eb24fc4398-ab516\n\nRECOMMENDED (no flash, no bootloop risk):\n  adb push this folder /data/local/tmp/\n  adb shell su -c "sh /data/local/tmp/%s/install_modules.sh"\n  Plug AR9271: dmesg | grep ath9k\n\nCheck stock_symvers.txt vs built_symvers.txt for CRC info.\n' "${OUT}" > "pkg/${OUT}/README.txt"
+          printf 'NetHunter ath9k_htc - Realme C51 RMX3830\nStock kernel: 5.15.178-android13-8-ge7eb24fc4398-ab516\n\nRECOMMENDED (no flash, no bootloop risk):\n  adb push this folder /data/local/tmp/\n  adb shell su -c "sh /data/local/tmp/%s/install_modules.sh"\n  Plug AR9271: dmesg | grep ath9k\n' "${OUT}" > "pkg/${OUT}/README.txt"
           ( cd pkg && zip -r "${OUT}.zip" "${OUT}" )
           ls -lh "pkg/${OUT}.zip"
           echo "ZIP_NAME=${OUT}.zip" >> "$GITHUB_ENV"
