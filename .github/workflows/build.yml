@@ -122,13 +122,31 @@ jobs:
         run: |
           set -e
           echo "=== Stripping __versions section from all built modules ==="
+          STRIPPED=0
+          FAILED=0
           for ko in $(find kernel/out -name '*.ko'); do
-            aarch64-linux-gnu-objcopy --remove-section=__versions "$ko" "${ko}.stripped" 2>/dev/null && mv "${ko}.stripped" "$ko" || echo "Could not strip $ko (may not have section)"
+            if aarch64-linux-gnu-objcopy --remove-section=__versions "$ko" "${ko}.tmp"; then
+              mv "${ko}.tmp" "$ko"
+              STRIPPED=$((STRIPPED+1))
+            else
+              echo "FAILED to strip: $ko"
+              rm -f "${ko}.tmp"
+              FAILED=$((FAILED+1))
+            fi
           done
+          echo "Stripped: $STRIPPED  Failed: $FAILED"
           echo "=== Verifying strip on ath9k_htc.ko ==="
           BUILT_KO=$(find kernel/out -name 'ath9k_htc.ko' | head -n1)
-          aarch64-linux-gnu-objdump -h "$BUILT_KO" | grep -i versions || echo "No __versions section found - strip successful"
-          aarch64-linux-gnu-objdump -h "$BUILT_KO" | grep -i modinfo || true
+          echo "Checking: $BUILT_KO"
+          if aarch64-linux-gnu-objdump -h "$BUILT_KO" | grep -qi versions; then
+            echo "ERROR: __versions section STILL PRESENT after strip"
+            aarch64-linux-gnu-objdump -h "$BUILT_KO" | grep -i versions
+            exit 1
+          else
+            echo "CONFIRMED: __versions section removed successfully"
+          fi
+          echo "=== modinfo vermagic after strip ==="
+          modinfo "$BUILT_KO" | grep vermagic || echo "no vermagic line (expected if .modinfo also affected)"
 
       - name: Check module_layout CRC
         run: |
