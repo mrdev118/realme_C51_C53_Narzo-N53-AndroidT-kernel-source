@@ -118,6 +118,18 @@ jobs:
           echo "Total modules built: $(find out -name '*.ko' | wc -l)"
           find out -name 'ath9k_htc.ko' -o -name 'cfg80211.ko' -o -name 'mac80211.ko' || true
 
+      - name: Strip __versions section to bypass CRC check
+        run: |
+          set -e
+          echo "=== Stripping __versions section from all built modules ==="
+          for ko in $(find kernel/out -name '*.ko'); do
+            aarch64-linux-gnu-objcopy --remove-section=__versions "$ko" "${ko}.stripped" 2>/dev/null && mv "${ko}.stripped" "$ko" || echo "Could not strip $ko (may not have section)"
+          done
+          echo "=== Verifying strip on ath9k_htc.ko ==="
+          BUILT_KO=$(find kernel/out -name 'ath9k_htc.ko' | head -n1)
+          aarch64-linux-gnu-objdump -h "$BUILT_KO" | grep -i versions || echo "No __versions section found - strip successful"
+          aarch64-linux-gnu-objdump -h "$BUILT_KO" | grep -i modinfo || true
+
       - name: Check module_layout CRC
         run: |
           BUILT_KO=$(find kernel/out -name 'ath9k_htc.ko' | head -n1)
@@ -145,7 +157,7 @@ jobs:
           cp tools/magiskboot "pkg/${OUT}/" 2>/dev/null || true
           cp build.log "pkg/${OUT}/" 2>/dev/null || true
           cp stock_symvers.txt built_symvers.txt "pkg/${OUT}/" 2>/dev/null || true
-          printf '#!/system/bin/sh\nset -e\ncd "$(dirname "$0")"\ncp firmware/htc_9271.fw /vendor/firmware/ 2>/dev/null || cp firmware/htc_9271.fw /lib/firmware/ 2>/dev/null || true\ninsmod modules/cfg80211.ko 2>/dev/null || true\ninsmod modules/mac80211.ko 2>/dev/null || true\ninsmod modules/ath.ko 2>/dev/null || true\ninsmod modules/ath9k_hw.ko 2>/dev/null || true\ninsmod modules/ath9k_common.ko 2>/dev/null || true\ninsmod modules/ath9k_htc.ko\necho "[+] Done. Plug AR9271 and check: dmesg | grep ath9k"\n' > "pkg/${OUT}/install_modules.sh"
+          printf '#!/system/bin/sh\nset -e\ncd "$(dirname "$0")"\ncp firmware/htc_9271.fw /vendor/firmware/ 2>/dev/null || cp firmware/htc_9271.fw /lib/firmware/ 2>/dev/null || true\ninsmod -f modules/cfg80211.ko 2>/dev/null || busybox insmod -f modules/cfg80211.ko 2>/dev/null || true\ninsmod -f modules/mac80211.ko 2>/dev/null || busybox insmod -f modules/mac80211.ko 2>/dev/null || true\ninsmod -f modules/ath.ko 2>/dev/null || busybox insmod -f modules/ath.ko 2>/dev/null || true\ninsmod -f modules/ath9k_hw.ko 2>/dev/null || busybox insmod -f modules/ath9k_hw.ko 2>/dev/null || true\ninsmod -f modules/ath9k_common.ko 2>/dev/null || busybox insmod -f modules/ath9k_common.ko 2>/dev/null || true\ninsmod -f modules/ath9k_htc.ko || busybox insmod -f modules/ath9k_htc.ko\necho "[+] Done. Plug AR9271 and check: dmesg | grep ath9k"\n' > "pkg/${OUT}/install_modules.sh"
           chmod +x "pkg/${OUT}/install_modules.sh"
           printf 'NetHunter ath9k_htc - Realme C51 RMX3830\nStock kernel: 5.15.178-android13-8-ge7eb24fc4398-ab516\n\nRECOMMENDED:\n  adb push this folder /data/local/tmp/\n  adb shell su -c "sh /data/local/tmp/%s/install_modules.sh"\n  Plug AR9271: dmesg | grep ath9k\n' "${OUT}" > "pkg/${OUT}/README.txt"
           ( cd pkg && zip -r "${OUT}.zip" "${OUT}" )
