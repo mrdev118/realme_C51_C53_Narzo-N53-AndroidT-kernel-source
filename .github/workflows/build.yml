@@ -8,6 +8,7 @@ on:
 env:
   GKI_TAG: android13-5.15.178_r00
   GKI_REPO: https://android.googlesource.com/kernel/common
+  REALME_REPO: https://github.com/mrdev118/realme_C51_C53_Narzo-N53-AndroidT-kernel-source
   STOCK_MODULES: stock_modules.tgz
   STOCK_CFG80211: cfg80211.ko
 
@@ -25,23 +26,53 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y git bc bison flex libssl-dev make build-essential gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu libncurses-dev libelf-dev dwarves kmod python3 zip unzip cpio rsync curl device-tree-compiler
 
-      - name: Reconstruct Module.symvers from stock modules
+      - name: Extract stock CRCs
         run: |
-          mkdir -p stock_ko
-          tar -xzf "${STOCK_MODULES}" -C stock_ko || true
-          echo "=== Stock vermagic ==="
-          modinfo "${STOCK_CFG80211}" | grep vermagic || true
-          echo "=== Reconstructing Module.symvers ==="
-          python3 extract_symvers.py stock_ko > Module.symvers
-          echo "Total symbols: $(wc -l < Module.symvers)"
-          grep "module_layout" Module.symvers || echo "module_layout not found"
-          head -3 Module.symvers
+          if [ -f "${STOCK_CFG80211}" ]; then
+            echo "=== Stock vermagic ==="
+            modinfo "${STOCK_CFG80211}" | grep vermagic || true
+            modprobe --dump-modversions "${STOCK_CFG80211}" | sort > stock_symvers.txt || true
+            echo "Stock CRC count: $(wc -l < stock_symvers.txt)"
+          fi
+
+      - name: Clone Realme repo for Unisoc fragment files
+        run: |
+          rm -rf realme_src
+          git clone --depth=1 "${REALME_REPO}" realme_src
+          echo "=== Looking for sprd-gki-diff-config ==="
+          find realme_src -iname "sprd-gki-diff-config" -o -iname "sprd_create_user_config.sh" -o -iname "sprd_gki_defconfig" 2>/dev/null
 
       - name: Clone GKI source
         run: |
           rm -rf kernel
           git clone --depth=1 -b "${GKI_TAG}" "${GKI_REPO}" kernel || git clone --depth=1 -b android13-5.15 "${GKI_REPO}" kernel
           head -5 kernel/Makefile
+
+      - name: Apply Unisoc GKI fragment (official Realme recipe)
+        run: |
+          set -e
+          DIFF_CONFIG=$(find realme_src -iname "sprd-gki-diff-config" | head -n1)
+          USER_CONFIG_SCRIPT=$(find realme_src -iname "sprd_create_user_config.sh" | head -n1)
+          echo "Diff config: $DIFF_CONFIG"
+          echo "User config script: $USER_CONFIG_SCRIPT"
+
+          export ARCH=arm64 SUBARCH=arm64
+          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
+
+          cd kernel
+          mkdir -p out_temp
+          make O=out_temp ARCH=arm64 gki_defconfig
+
+          if [ -n "$USER_CONFIG_SCRIPT" ] && [ -n "$DIFF_CONFIG" ]; then
+            echo "=== Applying official Unisoc diff fragment ==="
+            chmod +x "$GITHUB_WORKSPACE/$USER_CONFIG_SCRIPT"
+            bash "$GITHUB_WORKSPACE/$USER_CONFIG_SCRIPT" out_temp/.config "$GITHUB_WORKSPACE/$DIFF_CONFIG" || echo "Script failed, will use manual merge"
+            cp out_temp/.config arch/arm64/configs/sprd_gki_defconfig
+          else
+            echo "Fragment files not found - copying gki_defconfig as base"
+            cp out_temp/.config arch/arm64/configs/sprd_gki_defconfig
+          fi
+          rm -rf out_temp
 
       - name: Clone Clang toolchain
         run: |
@@ -55,24 +86,29 @@ jobs:
           chmod +x tools/magiskboot || true
           curl -L -o fw/htc_9271.fw https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/ath9k_htc/htc_9271-1.4.0.fw || curl -L -o fw/htc_9271.fw https://raw.githubusercontent.com/wkennington/linux-firmware/master/ath9k_htc/htc_9271.fw || true
 
-      - name: Write kernel config additions
+      - name: Write NetHunter WiFi config additions
         run: |
           printf 'CONFIG_MODULES=y\nCONFIG_MODVERSIONS=y\nCONFIG_MODULE_UNLOAD=y\nCONFIG_MODULE_FORCE_UNLOAD=y\nCONFIG_MODULE_SIG=n\nCONFIG_MODULE_SIG_FORCE=n\nCONFIG_MODULE_SIG_ALL=n\nCONFIG_CFG80211=m\nCONFIG_CFG80211_WEXT=y\nCONFIG_MAC80211=m\nCONFIG_MAC80211_HAS_RC=y\nCONFIG_MAC80211_MESH=y\nCONFIG_WLAN=y\nCONFIG_WLAN_VENDOR_ATH=y\nCONFIG_ATH_COMMON=m\nCONFIG_ATH9K_HW=m\nCONFIG_ATH9K_COMMON=m\nCONFIG_ATH9K_HTC=m\nCONFIG_USB_USBNET=y\nCONFIG_USB_NET_CDCETHER=y\nCONFIG_FW_LOADER_USER_HELPER=y\n' > /tmp/nethunter_additions.config
 
-      - name: Configure kernel
+      - name: Configure kernel with Unisoc sprd_gki_defconfig
         working-directory: kernel
         run: |
           set -e
           export ARCH=arm64 SUBARCH=arm64
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           mkdir -p out
-          make O=out ARCH=arm64 gki_defconfig
+          if [ -f arch/arm64/configs/sprd_gki_defconfig ]; then
+            echo "Using sprd_gki_defconfig (Unisoc fragment applied)"
+            make O=out ARCH=arm64 sprd_gki_defconfig
+          else
+            echo "Falling back to gki_defconfig"
+            make O=out ARCH=arm64 gki_defconfig
+          fi
           cat /tmp/nethunter_additions.config >> out/.config
           make O=out ARCH=arm64 olddefconfig
-          cp "$GITHUB_WORKSPACE/Module.symvers" out/Module.symvers
-          echo "Module.symvers copied: $(wc -l < out/Module.symvers) symbols"
+          grep -E "MODVERSIONS|ATH9K_HTC|CFG80211" out/.config || true
 
-      - name: Build modules against stock symvers
+      - name: Build modules
         working-directory: kernel
         run: |
           set -eo pipefail
@@ -87,7 +123,7 @@ jobs:
           if [ -z "$BUILT_KO" ]; then exit 0; fi
           modprobe --dump-modversions "$BUILT_KO" | sort > built_symvers.txt || true
           BUILT_ML=$(grep "module_layout" built_symvers.txt | awk '{print $1}')
-          STOCK_ML=$(grep "module_layout" Module.symvers | awk '{print $1}')
+          STOCK_ML=$(grep "module_layout" stock_symvers.txt | awk '{print $1}')
           echo "Built module_layout: $BUILT_ML"
           echo "Stock module_layout: $STOCK_ML"
           if [ "$BUILT_ML" = "$STOCK_ML" ]; then
@@ -107,7 +143,7 @@ jobs:
           cp fw/htc_9271.fw "pkg/${OUT}/firmware/" 2>/dev/null || true
           cp tools/magiskboot "pkg/${OUT}/" 2>/dev/null || true
           cp build.log "pkg/${OUT}/" 2>/dev/null || true
-          cp Module.symvers built_symvers.txt "pkg/${OUT}/" 2>/dev/null || true
+          cp stock_symvers.txt built_symvers.txt "pkg/${OUT}/" 2>/dev/null || true
           printf '#!/system/bin/sh\nset -e\ncd "$(dirname "$0")"\ncp firmware/htc_9271.fw /vendor/firmware/ 2>/dev/null || cp firmware/htc_9271.fw /lib/firmware/ 2>/dev/null || true\ninsmod modules/cfg80211.ko 2>/dev/null || true\ninsmod modules/mac80211.ko 2>/dev/null || true\ninsmod modules/ath.ko 2>/dev/null || true\ninsmod modules/ath9k_hw.ko 2>/dev/null || true\ninsmod modules/ath9k_common.ko 2>/dev/null || true\ninsmod modules/ath9k_htc.ko\necho "[+] Done. Plug AR9271 and check: dmesg | grep ath9k"\n' > "pkg/${OUT}/install_modules.sh"
           chmod +x "pkg/${OUT}/install_modules.sh"
           printf 'NetHunter ath9k_htc - Realme C51 RMX3830\nStock kernel: 5.15.178-android13-8-ge7eb24fc4398-ab516\n\nRECOMMENDED:\n  adb push this folder /data/local/tmp/\n  adb shell su -c "sh /data/local/tmp/%s/install_modules.sh"\n  Plug AR9271: dmesg | grep ath9k\n' "${OUT}" > "pkg/${OUT}/README.txt"
