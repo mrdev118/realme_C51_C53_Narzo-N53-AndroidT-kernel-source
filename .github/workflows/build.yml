@@ -115,7 +115,8 @@ jobs:
           export ARCH=arm64 SUBARCH=arm64
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           make O=out ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- CLANG_TRIPLE=aarch64-linux-gnu- KCFLAGS="-Wno-error" -j"$(nproc)" modules 2>&1 | tee ../build.log
-          find out -name '*.ko' | head -20
+          echo "Total modules built: $(find out -name '*.ko' | wc -l)"
+          find out -name 'ath9k_htc.ko' -o -name 'cfg80211.ko' -o -name 'mac80211.ko' || true
 
       - name: Check module_layout CRC
         run: |
