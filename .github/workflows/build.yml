@@ -118,29 +118,35 @@ jobs:
           echo "Total modules built: $(find out -name '*.ko' | wc -l)"
           find out -name 'ath9k_htc.ko' -o -name 'cfg80211.ko' -o -name 'mac80211.ko' || true
 
-      - name: Strip __versions section to bypass CRC check
+      - name: Patch __versions section with stock CRCs
         run: |
           set -e
-          echo "=== Zeroing __versions section contents in all built modules ==="
-          STRIPPED=0
-          FAILED=0
-          printf '' > /tmp/empty.bin
+          echo "=== Rebuilding __versions sections using stock CRCs ==="
+          PATCHED=0
+          SKIPPED=0
           for ko in $(find kernel/out -name '*.ko'); do
-            if aarch64-linux-gnu-objcopy --update-section __versions=/tmp/empty.bin "$ko" "${ko}.tmp" 2>/dev/null; then
-              mv "${ko}.tmp" "$ko"
-              STRIPPED=$((STRIPPED+1))
+            if python3 patch_versions.py stock_symvers.txt "$ko" /tmp/newversions.bin 2>/tmp/patch_err.txt; then
+              if [ -s /tmp/newversions.bin ]; then
+                if aarch64-linux-gnu-objcopy --update-section __versions=/tmp/newversions.bin "$ko" "${ko}.tmp" 2>/dev/null; then
+                  mv "${ko}.tmp" "$ko"
+                  PATCHED=$((PATCHED+1))
+                else
+                  rm -f "${ko}.tmp"
+                  SKIPPED=$((SKIPPED+1))
+                fi
+              else
+                SKIPPED=$((SKIPPED+1))
+              fi
             else
-              rm -f "${ko}.tmp"
-              FAILED=$((FAILED+1))
+              cat /tmp/patch_err.txt
+              SKIPPED=$((SKIPPED+1))
             fi
           done
-          echo "Zeroed: $STRIPPED  Failed/skipped: $FAILED"
+          echo "Patched: $PATCHED  Skipped: $SKIPPED"
           echo "=== Verifying ath9k_htc.ko ==="
           BUILT_KO=$(find kernel/out -name 'ath9k_htc.ko' | head -n1)
-          echo "Checking: $BUILT_KO"
-          aarch64-linux-gnu-objdump -h "$BUILT_KO" | grep -i versions || echo "no __versions section header"
-          SIZE=$(aarch64-linux-gnu-objdump -h "$BUILT_KO" | grep -i versions | awk '{print $3}')
-          echo "Section size now: $SIZE (should be 00000000 if zeroed)"
+          python3 patch_versions.py stock_symvers.txt "$BUILT_KO" /tmp/check.bin
+          aarch64-linux-gnu-objdump -h "$BUILT_KO" | grep -i versions || true
 
       - name: Check module_layout CRC
         run: |
