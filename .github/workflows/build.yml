@@ -250,31 +250,15 @@ jobs:
       - name: Prevent git version suffix
         run: echo "" > gki-kernel/.scmversion
 
+      - name: Debug echo test
+        run: echo "HELLO FROM DEBUG STEP"
+
       - name: Prepare kernel config (olddefconfig)
         run: |
-          echo "=== Step started ==="
-          echo "=== PWD ==="
-          pwd
-          echo "=== Checking gki-kernel directory ==="
-          ls -la gki-kernel/ | head -20
-          echo "=== Checking out dir ==="
-          ls -la gki-kernel/out/ 2>/dev/null || echo "out/ does not exist"
-          ls -la gki-kernel/out/.config 2>/dev/null || echo "out/.config does not exist"
-          echo "=== Checking clang ==="
-          ls -la clang/bin/clang 2>/dev/null || echo "clang binary not found"
+          ls -la gki-kernel/out/.config
           export PATH=$(pwd)/clang/bin:$PATH
-          which clang 2>/dev/null || echo "clang not in PATH"
-          clang --version 2>/dev/null | head -2 || echo "clang --version failed"
-          echo "=== Running olddefconfig ==="
           cd gki-kernel
-          make O=out ARCH=arm64 \
-            CC=clang \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            LLVM=1 \
-            LLVM_IAS=1 \
-            olddefconfig 2>&1 || { echo "=== olddefconfig FAILED ==="; cat out/.config 2>/dev/null | tail -20; exit 1; }
-          echo "=== olddefconfig succeeded ==="
+          make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- LLVM=1 LLVM_IAS=1 olddefconfig
 
       - name: Build kernel Image
         timeout-minutes: 90
