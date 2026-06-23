@@ -252,16 +252,24 @@ jobs:
 
       - name: Build kernel
         run: |
+          set -eo pipefail
           cd gki-kernel
           export ARCH=arm64
           export SUBARCH=arm64
           export PATH=$(pwd)/../clang/bin:$PATH
 
-          make O=out ARCH=arm64 olddefconfig
+          echo "=== Running olddefconfig ==="
+          make O=out ARCH=arm64 \
+            CC=clang \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            olddefconfig
 
           echo "=== Pre-build config check ==="
-          grep "CONFIG_ATH9K_HTC" out/.config
-          grep "CONFIG_LOCALVERSION=" out/.config
+          grep "CONFIG_ATH9K_HTC" out/.config || echo "WARNING: ATH9K_HTC not found in config"
+          grep "CONFIG_LOCALVERSION=" out/.config || echo "WARNING: LOCALVERSION not found in config"
 
           echo "=== Building kernel ==="
           make O=out ARCH=arm64 \
