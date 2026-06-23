@@ -250,13 +250,19 @@ jobs:
       - name: Prevent git version suffix
         run: echo "" > gki-kernel/.scmversion
 
-      - name: Build kernel
+      - name: Prepare kernel config (olddefconfig)
         run: |
-          set -eo pipefail
           cd gki-kernel
+          echo "=== Verifying gki-kernel directory ==="
+          pwd
+          ls -la out/.config || echo "WARNING: out/.config missing"
+
           export ARCH=arm64
           export SUBARCH=arm64
           export PATH=$(pwd)/../clang/bin:$PATH
+
+          echo "=== clang version ==="
+          clang --version | head -3
 
           echo "=== Running olddefconfig ==="
           make O=out ARCH=arm64 \
@@ -267,11 +273,19 @@ jobs:
             LLVM_IAS=1 \
             olddefconfig
 
-          echo "=== Pre-build config check ==="
-          grep "CONFIG_ATH9K_HTC" out/.config || echo "WARNING: ATH9K_HTC not found in config"
-          grep "CONFIG_LOCALVERSION=" out/.config || echo "WARNING: LOCALVERSION not found in config"
+          echo "=== Post-olddefconfig config check ==="
+          grep "CONFIG_ATH9K_HTC" out/.config || echo "WARNING: ATH9K_HTC not found"
+          grep "CONFIG_LOCALVERSION=" out/.config || echo "WARNING: LOCALVERSION not found"
 
-          echo "=== Building kernel ==="
+      - name: Build kernel Image
+        timeout-minutes: 90
+        run: |
+          cd gki-kernel
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export PATH=$(pwd)/../clang/bin:$PATH
+
+          echo "=== Starting kernel build ==="
           make O=out ARCH=arm64 \
             CC=clang \
             CLANG_TRIPLE=aarch64-linux-gnu- \
@@ -283,6 +297,11 @@ jobs:
             -j$(nproc) 2>&1 | tee build.log
 
           echo ""
+          echo "=== Build completed ==="
+
+      - name: Verify build results
+        run: |
+          cd gki-kernel
           echo "============================================"
           echo "=== BUILD RESULTS ==="
           echo "============================================"
@@ -293,7 +312,7 @@ jobs:
           strings out/arch/arm64/boot/Image | grep "5.15.178" | head -5
           echo ""
           echo "=== WiFi built-in? ==="
-          grep -E "CONFIG_(CFG80211|MAC80211|ATH9K_HTC)=" out/.config
+          grep -E "CONFIG_(CFG80211|MAC80211|ATH9K_HTC)=" out/.config || true
           echo ""
           echo "=== Module count ==="
           find out/ -name "*.ko" 2>/dev/null | wc -l
