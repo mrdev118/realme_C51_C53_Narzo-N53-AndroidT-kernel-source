@@ -252,30 +252,29 @@ jobs:
 
       - name: Prepare kernel config (olddefconfig)
         run: |
-          cd gki-kernel
-          echo "=== Verifying gki-kernel directory ==="
+          echo "=== Step started ==="
+          echo "=== PWD ==="
           pwd
-          ls -la out/.config || echo "WARNING: out/.config missing"
-
-          export ARCH=arm64
-          export SUBARCH=arm64
-          export PATH=$(pwd)/../clang/bin:$PATH
-
-          echo "=== clang version ==="
-          clang --version | head -3
-
+          echo "=== Checking gki-kernel directory ==="
+          ls -la gki-kernel/ | head -20
+          echo "=== Checking out dir ==="
+          ls -la gki-kernel/out/ 2>/dev/null || echo "out/ does not exist"
+          ls -la gki-kernel/out/.config 2>/dev/null || echo "out/.config does not exist"
+          echo "=== Checking clang ==="
+          ls -la clang/bin/clang 2>/dev/null || echo "clang binary not found"
+          export PATH=$(pwd)/clang/bin:$PATH
+          which clang 2>/dev/null || echo "clang not in PATH"
+          clang --version 2>/dev/null | head -2 || echo "clang --version failed"
           echo "=== Running olddefconfig ==="
+          cd gki-kernel
           make O=out ARCH=arm64 \
             CC=clang \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
             LLVM=1 \
             LLVM_IAS=1 \
-            olddefconfig
-
-          echo "=== Post-olddefconfig config check ==="
-          grep "CONFIG_ATH9K_HTC" out/.config || echo "WARNING: ATH9K_HTC not found"
-          grep "CONFIG_LOCALVERSION=" out/.config || echo "WARNING: LOCALVERSION not found"
+            olddefconfig 2>&1 || { echo "=== olddefconfig FAILED ==="; cat out/.config 2>/dev/null | tail -20; exit 1; }
+          echo "=== olddefconfig succeeded ==="
 
       - name: Build kernel Image
         timeout-minutes: 90
