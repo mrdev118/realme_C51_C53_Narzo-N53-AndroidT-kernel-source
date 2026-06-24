@@ -39,18 +39,15 @@ jobs:
         run: |
           git clone --depth=1 -b 14 \
             https://gitlab.com/ThankYouMario/android_prebuilts_clang-standalone/ clang
+          echo "=== Clang version ==="
+          clang/bin/clang --version | head -2
 
       - name: Clone AOSP GKI 5.15 kernel
         run: |
-          # Try exact 5.15.178 tag first, fall back to branch
-          git clone --depth=1 -b android13-5.15.178_r00 \
-            https://android.googlesource.com/kernel/common gki-kernel 2>&1 || {
-            echo "=== Tag not found, cloning branch ==="
-            git clone --depth=1 -b android13-5.15 \
-              https://android.googlesource.com/kernel/common gki-kernel
-          }
+          git clone --depth=1 -b android13-5.15 \
+            https://android.googlesource.com/kernel/common kernel
 
-          cd gki-kernel
+          cd kernel
           echo "=== Kernel version from Makefile ==="
           head -5 Makefile
 
@@ -59,13 +56,22 @@ jobs:
           if [ "$SUBLEVEL" != "178" ]; then
             echo "WARNING: SUBLEVEL=$SUBLEVEL, forcing to 178 to match stock"
             sed -i 's/^SUBLEVEL = .*/SUBLEVEL = 178/' Makefile
-            echo "=== Updated Makefile ==="
             head -5 Makefile
           fi
 
-      - name: Convert Unisoc fragment to Kconfig format
+      - name: Generate base config with gki_defconfig
         run: |
-          # The sprd-gki-diff-config uses ADD:/DEL:/MOD: format — convert it
+          cd kernel
+          export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
+
+          # Use gki_defconfig as starting point (this works without clang)
+          make ARCH=arm64 O=out gki_defconfig
+          echo "=== Base config generated ==="
+          wc -l out/.config
+
+      - name: Apply Unisoc fragment config
+        run: |
+          # Convert sprd-gki-diff-config (ADD:/DEL:/MOD: format) to Kconfig
           python3 << 'PYEOF'
           import os
 
@@ -97,7 +103,7 @@ jobs:
                       dels.append(f"# {config} is not set")
 
           with open(output_path, 'w') as f:
-              f.write("# Unisoc SPRD GKI fragment (converted from sprd-gki-diff-config)\n")
+              f.write("# Unisoc SPRD GKI fragment\n")
               for d in dels:
                   f.write(d + "\n")
               f.write("\n")
@@ -111,16 +117,21 @@ jobs:
           PYEOF
 
           echo "=== Fragment preview ==="
-          head -20 /tmp/unisoc_fragment.config
+          head -20 /tmp/unisoc_fragment.config 2>/dev/null || echo "No fragment"
 
-      - name: Create NetHunter config fragment
+      - name: Apply NetHunter config additions
         run: |
-          cat > /tmp/nethunter.config << 'EOF'
-          # Android KABI
-          CONFIG_ANDROID_VENDOR_OEM_DATA=y
-          CONFIG_ANDROID_KABI_RESERVE=y
+          # Append Unisoc fragment to .config
+          if [ -s /tmp/unisoc_fragment.config ]; then
+            echo "" >> kernel/out/.config
+            cat /tmp/unisoc_fragment.config >> kernel/out/.config
+            echo "=== Appended Unisoc fragment ==="
+          fi
 
-          # WiFi stack BUILT-IN (AR9271 works without module loading)
+          # Append NetHunter WiFi/ath9k config
+          cat >> kernel/out/.config << 'EOF'
+
+          # === NetHunter WiFi/AR9271 additions ===
           CONFIG_WIRELESS=y
           CONFIG_WLAN=y
           CONFIG_CFG80211=y
@@ -130,26 +141,18 @@ jobs:
           CONFIG_MAC80211_HAS_RC=y
           CONFIG_MAC80211_RC_MINSTREL=y
           CONFIG_MAC80211_MESH=y
-
-          # Atheros AR9271 driver chain BUILT-IN
           CONFIG_WLAN_VENDOR_ATH=y
           CONFIG_ATH_COMMON=y
           CONFIG_ATH9K_HW=y
           CONFIG_ATH9K_COMMON=y
           CONFIG_ATH9K_HTC=y
           CONFIG_ATH9K_BTCOEX_SUPPORT=y
-
-          # USB host
           CONFIG_USB=y
           CONFIG_USB_USBNET=y
           CONFIG_USB_NET_CDCETHER=y
-
-          # Firmware loading
           CONFIG_FW_LOADER=y
           CONFIG_FW_LOADER_USER_HELPER=y
           CONFIG_FW_LOADER_USER_HELPER_FALLBACK=y
-
-          # Module support for stock vendor modules
           CONFIG_MODULES=y
           CONFIG_MODULE_UNLOAD=y
           CONFIG_MODULE_FORCE_UNLOAD=y
@@ -157,83 +160,47 @@ jobs:
           # CONFIG_MODULE_SIG is not set
           # CONFIG_MODULE_SIG_FORCE is not set
           # CONFIG_MODULE_SIG_ALL is not set
-
-          # Must match stock vermagic flags
           CONFIG_SMP=y
           CONFIG_PREEMPT=y
-
-          # Version: match stock exactly
           CONFIG_LOCALVERSION="-android13-8-ge7eb24fc4398-ab516"
           CONFIG_LOCALVERSION_AUTO=n
           EOF
 
           # Strip leading whitespace from heredoc
-          sed -i 's/^          //' /tmp/nethunter.config
-          echo "=== NetHunter fragment ==="
-          cat /tmp/nethunter.config
+          sed -i 's/^          //' kernel/out/.config
 
-      - name: Merge kernel configs
+          echo "=== Config size after additions ==="
+          wc -l kernel/out/.config
+
+      - name: Resolve config with olddefconfig
         run: |
-          cd gki-kernel
-          export PATH=$(pwd)/../clang/bin:$PATH
+          cd kernel
+          export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
 
-          echo "=== Checking prerequisites ==="
-          ls arch/arm64/configs/gki_defconfig || { echo "ERROR: gki_defconfig not found!"; exit 1; }
-          ls scripts/kconfig/merge_config.sh || { echo "ERROR: merge_config.sh not found!"; exit 1; }
+          echo "=== Running olddefconfig to resolve dependencies ==="
+          make O=out ARCH=arm64 \
+            CC=clang \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            olddefconfig
 
-          # Merge: GKI base + Unisoc hardware + NetHunter additions
-          if [ -s /tmp/unisoc_fragment.config ]; then
-            echo "=== Merging: gki_defconfig + Unisoc fragment + NetHunter ==="
-            ARCH=arm64 CC=clang LLVM=1 scripts/kconfig/merge_config.sh \
-              arch/arm64/configs/gki_defconfig \
-              /tmp/unisoc_fragment.config \
-              /tmp/nethunter.config
-          else
-            echo "=== Merging: gki_defconfig + NetHunter (no Unisoc fragment) ==="
-            ARCH=arm64 CC=clang LLVM=1 scripts/kconfig/merge_config.sh \
-              arch/arm64/configs/gki_defconfig \
-              /tmp/nethunter.config
-          fi
-
-          echo "=== Verifying .config was generated ==="
-          if [ ! -f .config ]; then
-            echo "FATAL: merge_config.sh did not produce .config!"
-            echo "Falling back to manual defconfig + script approach..."
-            make ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 \
-              CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- \
-              gki_defconfig
-            cat /tmp/nethunter.config >> .config
-            if [ -s /tmp/unisoc_fragment.config ]; then
-              cat /tmp/unisoc_fragment.config >> .config
-            fi
-          fi
-
-          mkdir -p out
-          cp .config out/.config
-
-          echo "=== .config size check ==="
-          wc -l out/.config
-          ls -la out/.config
-
-          echo ""
-          echo "=== CRITICAL CONFIG VERIFICATION ==="
-          echo "--- WiFi ---"
-          grep -E "^CONFIG_(CFG80211|MAC80211|ATH9K|ATH_COMMON)=" out/.config || echo "MISSING!"
-          echo "--- Modules/Version ---"
-          grep -E "^CONFIG_(MODVERSIONS|MODULE_UNLOAD|LOCALVERSION)" out/.config || echo "MISSING!"
-          echo "--- Vermagic flags ---"
-          grep -E "^CONFIG_(PREEMPT|SMP)=" out/.config || echo "MISSING!"
+          echo "=== Config verification ==="
+          grep "CONFIG_ATH9K_HTC" out/.config || echo "WARNING: ATH9K_HTC missing"
+          grep "CONFIG_CFG80211" out/.config | head -3
+          grep "CONFIG_LOCALVERSION=" out/.config
+          grep "CONFIG_MODVERSIONS" out/.config
 
       - name: Patch check_version for CRC bypass
         run: |
-          cd gki-kernel
+          cd kernel
           python3 << 'PYEOF'
           import re
 
           with open('kernel/module.c', 'r') as f:
               content = f.read()
 
-          # Find check_version() and insert return 1 after opening brace
           pattern = r'(static int check_version\([\s\S]*?\)\n\{)'
           match = re.search(pattern, content)
 
@@ -245,7 +212,6 @@ jobs:
                   f.write(content)
               print('SUCCESS: Patched check_version() to always return 1')
           else:
-              # Alternate pattern
               pattern2 = r'(static int check_version\([^{]+\{)'
               match2 = re.search(pattern2, content, re.DOTALL)
               if match2:
@@ -266,42 +232,36 @@ jobs:
           grep -n "return 1.*CRC bypass" kernel/module.c
 
       - name: Prevent git version suffix
-        run: echo "" > gki-kernel/.scmversion
+        run: echo "" > kernel/.scmversion
 
-      - name: Build kernel Image
+      - name: Build kernel
         timeout-minutes: 90
         run: |
-          echo "ALIVE - Build step is running"
-          echo "PWD: $(pwd)"
-          echo "Disk space:"
-          df -h /
-          echo "gki-kernel exists?"
-          ls -d gki-kernel/ && echo "YES" || echo "NO"
-          echo "clang exists?"
-          ls clang/bin/clang && echo "YES" || echo "NO"
-          echo "out/.config exists?"
-          ls gki-kernel/out/.config && echo "YES" || echo "NO - THIS IS THE PROBLEM"
-          echo "=== Now trying olddefconfig ==="
-          export PATH=$(pwd)/clang/bin:$PATH
-          cd gki-kernel
-          make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- LLVM=1 LLVM_IAS=1 olddefconfig || echo "OLDDEFCONFIG FAILED with exit code $?"
-          echo "=== Continuing to build ==="
-          make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- LLVM=1 LLVM_IAS=1 LOCALVERSION="" KCFLAGS="-Wno-error" -j$(nproc) 2>&1 | tee build.log
-          echo "=== Build completed ==="
+          cd kernel
+          export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
 
-      - name: Verify build results
-        run: |
-          cd gki-kernel
+          echo "=== Starting kernel build ==="
+          make O=out ARCH=arm64 \
+            CC=clang \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            LOCALVERSION="" \
+            KCFLAGS="-Wno-error" \
+            -j$(nproc) 2>&1 | tee build.log
+
+          echo ""
           echo "============================================"
           echo "=== BUILD RESULTS ==="
           echo "============================================"
           echo "=== Kernel Image ==="
           ls -lh out/arch/arm64/boot/Image 2>/dev/null || { echo "FAILED: Image not found!"; exit 1; }
           echo ""
-          echo "=== Vermagic (expect: 5.15.178-android13-8-ge7eb24fc4398-ab516) ==="
+          echo "=== Vermagic ==="
           strings out/arch/arm64/boot/Image | grep "5.15.178" | head -5
           echo ""
-          echo "=== WiFi built-in? ==="
+          echo "=== WiFi config ==="
           grep -E "CONFIG_(CFG80211|MAC80211|ATH9K_HTC)=" out/.config || true
           echo ""
           echo "=== Module count ==="
@@ -322,10 +282,10 @@ jobs:
         if: always()
         run: |
           mkdir -p artifact
-          cp gki-kernel/out/arch/arm64/boot/Image artifact/ 2>/dev/null || true
-          find gki-kernel/out/ -name "*.ko" -exec cp {} artifact/ \; 2>/dev/null || true
-          cp gki-kernel/build.log artifact/ 2>/dev/null || true
-          cp gki-kernel/out/.config artifact/kernel_config.txt 2>/dev/null || true
+          cp kernel/out/arch/arm64/boot/Image artifact/ 2>/dev/null || true
+          find kernel/out/ -name "*.ko" -exec cp {} artifact/ \; 2>/dev/null || true
+          cp kernel/build.log artifact/ 2>/dev/null || true
+          cp kernel/out/.config artifact/kernel_config.txt 2>/dev/null || true
           echo ""
           echo "=== Final artifacts ==="
           ls -lh artifact/
@@ -344,6 +304,6 @@ jobs:
         with:
           name: build-log-failure
           path: |
-            gki-kernel/build.log
-            gki-kernel/out/.config
+            kernel/build.log
+            kernel/out/.config
           retention-days: 14
