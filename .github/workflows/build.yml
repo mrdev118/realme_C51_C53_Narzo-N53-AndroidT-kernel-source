@@ -255,10 +255,18 @@ jobs:
 
       - name: Prepare kernel config (olddefconfig)
         run: |
-          ls -la gki-kernel/out/.config
+          echo "=== Checking if .config exists ==="
+          ls -la gki-kernel/out/.config 2>&1 || true
+          ls -la gki-kernel/.config 2>&1 || true
+          echo "=== Contents of gki-kernel/out/ ==="
+          ls -la gki-kernel/out/ 2>&1 || echo "gki-kernel/out/ does not exist!"
+          echo "=== Running olddefconfig ==="
           export PATH=$(pwd)/clang/bin:$PATH
           cd gki-kernel
           make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- LLVM=1 LLVM_IAS=1 olddefconfig
+          echo "=== Config check after olddefconfig ==="
+          grep "CONFIG_ATH9K_HTC" out/.config || echo "ATH9K_HTC not in config"
+          grep "CONFIG_LOCALVERSION=" out/.config || echo "LOCALVERSION not in config"
 
       - name: Build kernel Image
         timeout-minutes: 90
