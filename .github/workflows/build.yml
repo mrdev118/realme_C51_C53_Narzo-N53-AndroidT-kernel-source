@@ -175,6 +175,7 @@ jobs:
       - name: Merge kernel configs
         run: |
           cd gki-kernel
+          export PATH=$(pwd)/../clang/bin:$PATH
 
           echo "=== Checking prerequisites ==="
           ls arch/arm64/configs/gki_defconfig || { echo "ERROR: gki_defconfig not found!"; exit 1; }
@@ -183,19 +184,36 @@ jobs:
           # Merge: GKI base + Unisoc hardware + NetHunter additions
           if [ -s /tmp/unisoc_fragment.config ]; then
             echo "=== Merging: gki_defconfig + Unisoc fragment + NetHunter ==="
-            ARCH=arm64 scripts/kconfig/merge_config.sh \
+            ARCH=arm64 CC=clang LLVM=1 scripts/kconfig/merge_config.sh \
               arch/arm64/configs/gki_defconfig \
               /tmp/unisoc_fragment.config \
               /tmp/nethunter.config
           else
             echo "=== Merging: gki_defconfig + NetHunter (no Unisoc fragment) ==="
-            ARCH=arm64 scripts/kconfig/merge_config.sh \
+            ARCH=arm64 CC=clang LLVM=1 scripts/kconfig/merge_config.sh \
               arch/arm64/configs/gki_defconfig \
               /tmp/nethunter.config
           fi
 
+          echo "=== Verifying .config was generated ==="
+          if [ ! -f .config ]; then
+            echo "FATAL: merge_config.sh did not produce .config!"
+            echo "Falling back to manual defconfig + script approach..."
+            make ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 \
+              CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- \
+              gki_defconfig
+            cat /tmp/nethunter.config >> .config
+            if [ -s /tmp/unisoc_fragment.config ]; then
+              cat /tmp/unisoc_fragment.config >> .config
+            fi
+          fi
+
           mkdir -p out
           cp .config out/.config
+
+          echo "=== .config size check ==="
+          wc -l out/.config
+          ls -la out/.config
 
           echo ""
           echo "=== CRITICAL CONFIG VERIFICATION ==="
