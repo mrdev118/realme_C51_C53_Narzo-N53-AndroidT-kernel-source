@@ -271,41 +271,22 @@ jobs:
       - name: Build kernel Image
         timeout-minutes: 90
         run: |
+          echo "ALIVE - Build step is running"
+          echo "PWD: $(pwd)"
+          echo "Disk space:"
+          df -h /
+          echo "gki-kernel exists?"
+          ls -d gki-kernel/ && echo "YES" || echo "NO"
+          echo "clang exists?"
+          ls clang/bin/clang && echo "YES" || echo "NO"
+          echo "out/.config exists?"
+          ls gki-kernel/out/.config && echo "YES" || echo "NO - THIS IS THE PROBLEM"
+          echo "=== Now trying olddefconfig ==="
+          export PATH=$(pwd)/clang/bin:$PATH
           cd gki-kernel
-          export ARCH=arm64
-          export SUBARCH=arm64
-          export PATH=$(pwd)/../clang/bin:$PATH
-
-          echo "=== Checking .config ==="
-          ls -la out/.config 2>&1 || true
-          wc -l out/.config 2>&1 || true
-
-          echo "=== Running olddefconfig ==="
-          make O=out ARCH=arm64 \
-            CC=clang \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            LLVM=1 \
-            LLVM_IAS=1 \
-            olddefconfig 2>&1
-          echo "=== olddefconfig exit code: $? ==="
-
-          echo "=== Config check ==="
-          grep "CONFIG_ATH9K_HTC" out/.config || echo "WARNING: ATH9K_HTC not found"
-          grep "CONFIG_LOCALVERSION=" out/.config || echo "WARNING: LOCALVERSION not found"
-
-          echo "=== Starting kernel build ==="
-          make O=out ARCH=arm64 \
-            CC=clang \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            LLVM=1 \
-            LLVM_IAS=1 \
-            LOCALVERSION="" \
-            KCFLAGS="-Wno-error" \
-            -j$(nproc) 2>&1 | tee build.log
-
-          echo ""
+          make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- LLVM=1 LLVM_IAS=1 olddefconfig || echo "OLDDEFCONFIG FAILED with exit code $?"
+          echo "=== Continuing to build ==="
+          make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- LLVM=1 LLVM_IAS=1 LOCALVERSION="" KCFLAGS="-Wno-error" -j$(nproc) 2>&1 | tee build.log
           echo "=== Build completed ==="
 
       - name: Verify build results
