@@ -1,4 +1,4 @@
-name: Build NetHunter Kernel - Realme C51
+name: Build NetHunter WiFi Modules - Realme C51
 
 on:
   workflow_dispatch:
@@ -14,10 +14,9 @@ jobs:
       - name: Free disk space
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
-          echo "=== Disk space ==="
           df -h /
 
-      - name: Checkout Realme repo (for Unisoc configs)
+      - name: Checkout Realme repo
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
@@ -33,13 +32,12 @@ jobs:
             binutils-aarch64-linux-gnu \
             libncurses-dev libelf-dev \
             python3 zip unzip cpio wget \
-            dwarves device-tree-compiler
+            dwarves device-tree-compiler kmod
 
       - name: Clone Clang toolchain
         run: |
           git clone --depth=1 -b 14 \
             https://gitlab.com/ThankYouMario/android_prebuilts_clang-standalone/ clang
-          echo "=== Clang version ==="
           clang/bin/clang --version | head -2
 
       - name: Clone AOSP GKI 5.15 kernel
@@ -48,108 +46,72 @@ jobs:
             https://android.googlesource.com/kernel/common kernel
 
           cd kernel
-          echo "=== Kernel version from Makefile ==="
           head -5 Makefile
 
           # Force SUBLEVEL to 178 to match stock
           SUBLEVEL=$(grep '^SUBLEVEL' Makefile | head -1 | awk '{print $3}')
           if [ "$SUBLEVEL" != "178" ]; then
-            echo "WARNING: SUBLEVEL=$SUBLEVEL, forcing to 178 to match stock"
+            echo "Forcing SUBLEVEL to 178"
             sed -i 's/^SUBLEVEL = .*/SUBLEVEL = 178/' Makefile
-            head -5 Makefile
           fi
+          head -5 Makefile
 
-      - name: Generate base config with gki_defconfig
+      - name: Configure kernel to match stock
         run: |
           cd kernel
           export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
 
-          # Use gki_defconfig as starting point (this works without clang)
+          # Start with gki_defconfig
           make ARCH=arm64 O=out gki_defconfig
-          echo "=== Base config generated ==="
-          wc -l out/.config
 
-      - name: Apply Unisoc fragment config
-        run: |
-          # Convert sprd-gki-diff-config (ADD:/DEL:/MOD: format) to Kconfig
+          # Apply Unisoc fragment
           python3 << 'PYEOF'
           import os
-
-          fragment_path = "realme-src/Documentation/sprd-gki-diff-config"
+          fragment_path = "$GITHUB_WORKSPACE/realme-src/Documentation/sprd-gki-diff-config"
           output_path = "/tmp/unisoc_fragment.config"
-
           if not os.path.exists(fragment_path):
-              print(f"WARNING: {fragment_path} not found, creating empty fragment")
+              fragment_path = os.environ.get("GITHUB_WORKSPACE", ".") + "/realme-src/Documentation/sprd-gki-diff-config"
+          if not os.path.exists(fragment_path):
+              print("WARNING: sprd-gki-diff-config not found")
               open(output_path, 'w').close()
               exit(0)
-
-          adds = []
-          mods = []
-          dels = []
-
-          with open(fragment_path, 'r') as f:
+          adds, mods, dels = [], [], []
+          with open(fragment_path) as f:
               for line in f:
                   line = line.strip()
-                  if not line:
-                      continue
-                  if line.startswith("ADD:"):
-                      config = line[4:]
-                      adds.append(f"{config}=y")
-                  elif line.startswith("MOD:"):
-                      config = line[4:]
-                      mods.append(f"{config}=m")
-                  elif line.startswith("DEL:"):
-                      config = line[4:]
-                      dels.append(f"# {config} is not set")
-
+                  if not line: continue
+                  if line.startswith("ADD:"): adds.append(f"{line[4:]}=y")
+                  elif line.startswith("MOD:"): mods.append(f"{line[4:]}=m")
+                  elif line.startswith("DEL:"): dels.append(f"# {line[4:]} is not set")
           with open(output_path, 'w') as f:
-              f.write("# Unisoc SPRD GKI fragment\n")
-              for d in dels:
-                  f.write(d + "\n")
-              f.write("\n")
-              for a in adds:
-                  f.write(a + "\n")
-              f.write("\n")
-              for m in mods:
-                  f.write(m + "\n")
-
-          print(f"Converted: {len(adds)} ADD + {len(mods)} MOD + {len(dels)} DEL = {len(adds)+len(mods)+len(dels)} entries")
+              for x in dels + adds + mods: f.write(x + "\n")
+          print(f"Fragment: {len(adds)} ADD + {len(mods)} MOD + {len(dels)} DEL")
           PYEOF
 
-          echo "=== Fragment preview ==="
-          head -20 /tmp/unisoc_fragment.config 2>/dev/null || echo "No fragment"
-
-      - name: Apply NetHunter config additions
-        run: |
-          # Append Unisoc fragment to .config
+          # Append Unisoc fragment
           if [ -s /tmp/unisoc_fragment.config ]; then
-            echo "" >> kernel/out/.config
-            cat /tmp/unisoc_fragment.config >> kernel/out/.config
-            echo "=== Appended Unisoc fragment ==="
+            cat /tmp/unisoc_fragment.config >> out/.config
           fi
 
-          # Append NetHunter WiFi/ath9k config
-          cat >> kernel/out/.config << 'EOF'
-
-          # === NetHunter WiFi/AR9271 additions ===
+          # Append WiFi/ath9k config — BUILD AS MODULES (=m)
+          cat >> out/.config << 'EOF'
           CONFIG_WIRELESS=y
           CONFIG_WLAN=y
-          CONFIG_CFG80211=y
+          CONFIG_CFG80211=m
           CONFIG_CFG80211_WEXT=y
           CONFIG_CFG80211_DEFAULT_PS=y
-          CONFIG_MAC80211=y
+          CONFIG_MAC80211=m
           CONFIG_MAC80211_HAS_RC=y
           CONFIG_MAC80211_RC_MINSTREL=y
           CONFIG_MAC80211_MESH=y
           CONFIG_WLAN_VENDOR_ATH=y
-          CONFIG_ATH_COMMON=y
-          CONFIG_ATH9K_HW=y
-          CONFIG_ATH9K_COMMON=y
-          CONFIG_ATH9K_HTC=y
+          CONFIG_ATH_COMMON=m
+          CONFIG_ATH9K_HW=m
+          CONFIG_ATH9K_COMMON=m
+          CONFIG_ATH9K_HTC=m
           CONFIG_ATH9K_BTCOEX_SUPPORT=y
           CONFIG_USB=y
-          CONFIG_USB_USBNET=y
-          CONFIG_USB_NET_CDCETHER=y
+          CONFIG_USB_USBNET=m
           CONFIG_FW_LOADER=y
           CONFIG_FW_LOADER_USER_HELPER=y
           CONFIG_FW_LOADER_USER_HELPER_FALLBACK=y
@@ -157,9 +119,6 @@ jobs:
           CONFIG_MODULE_UNLOAD=y
           CONFIG_MODULE_FORCE_UNLOAD=y
           CONFIG_MODVERSIONS=y
-          # CONFIG_MODULE_SIG is not set
-          # CONFIG_MODULE_SIG_FORCE is not set
-          # CONFIG_MODULE_SIG_ALL is not set
           CONFIG_SMP=y
           CONFIG_PREEMPT=y
           CONFIG_LOCALVERSION="-android13-8-ge7eb24fc4398-ab516"
@@ -167,27 +126,18 @@ jobs:
           EOF
 
           # Strip leading whitespace from heredoc
-          sed -i 's/^          //' kernel/out/.config
+          sed -i 's/^          //' out/.config
 
-          echo "=== Config size after additions ==="
-          wc -l kernel/out/.config
-
-      - name: Resolve config with olddefconfig
-        run: |
-          cd kernel
-          export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
-
-          echo "=== Running olddefconfig to resolve dependencies ==="
+          # Resolve dependencies
           make O=out ARCH=arm64 \
             CC=clang \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
-            LLVM=1 \
-            LLVM_IAS=1 \
+            LLVM=1 LLVM_IAS=1 \
             olddefconfig
 
-          echo "=== Config verification ==="
-          grep "CONFIG_ATH9K_HTC" out/.config || echo "WARNING: ATH9K_HTC missing"
+          echo "=== Config check ==="
+          grep "CONFIG_ATH9K_HTC" out/.config
           grep "CONFIG_CFG80211" out/.config | head -3
           grep "CONFIG_LOCALVERSION=" out/.config
           grep "CONFIG_MODVERSIONS" out/.config
@@ -197,78 +147,62 @@ jobs:
           cd kernel
           python3 << 'PYEOF'
           import re
-
           with open('kernel/module.c', 'r') as f:
               content = f.read()
-
-          pattern = r'(static int check_version\([\s\S]*?\)\n\{)'
-          match = re.search(pattern, content)
-
+          pattern = r'(static int check_version\([^{]+\{)'
+          match = re.search(pattern, content, re.DOTALL)
           if match:
               pos = match.end()
-              patch = '\n\treturn 1; /* CRC bypass: allow stock vendor modules with mismatched CRCs */'
-              content = content[:pos] + patch + content[pos:]
+              content = content[:pos] + '\n\treturn 1; /* CRC bypass */' + content[pos:]
               with open('kernel/module.c', 'w') as f:
                   f.write(content)
-              print('SUCCESS: Patched check_version() to always return 1')
+              print('SUCCESS: Patched check_version()')
           else:
-              pattern2 = r'(static int check_version\([^{]+\{)'
-              match2 = re.search(pattern2, content, re.DOTALL)
-              if match2:
-                  pos = match2.end()
-                  content = content[:pos] + '\n\treturn 1; /* CRC bypass */' + content[pos:]
-                  with open('kernel/module.c', 'w') as f:
-                      f.write(content)
-                  print('SUCCESS: Patched (alternate pattern)')
-              else:
-                  print('ERROR: check_version() not found!')
-                  for i, line in enumerate(content.split('\n')):
-                      if 'check_version' in line:
-                          print(f'  Line {i+1}: {line.strip()}')
-                  exit(1)
+              print('ERROR: check_version() not found!')
+              exit(1)
           PYEOF
-
-          echo "=== Verify patch ==="
           grep -n "return 1.*CRC bypass" kernel/module.c
 
       - name: Prevent git version suffix
         run: echo "" > kernel/.scmversion
 
-      - name: Build kernel
-        timeout-minutes: 90
+      - name: Build WiFi modules
+        timeout-minutes: 60
         run: |
           cd kernel
           export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
 
-          echo "=== Starting kernel build ==="
+          echo "=== Building modules ==="
           make O=out ARCH=arm64 \
             CC=clang \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
-            LLVM=1 \
-            LLVM_IAS=1 \
+            LLVM=1 LLVM_IAS=1 \
             LOCALVERSION="" \
             KCFLAGS="-Wno-error" \
-            -j$(nproc) 2>&1 | tee build.log
+            -j$(nproc) \
+            modules 2>&1 | tee build.log
 
           echo ""
-          echo "============================================"
-          echo "=== BUILD RESULTS ==="
-          echo "============================================"
-          echo "=== Kernel Image ==="
-          ls -lh out/arch/arm64/boot/Image 2>/dev/null || { echo "FAILED: Image not found!"; exit 1; }
-          echo ""
-          echo "=== Vermagic ==="
-          strings out/arch/arm64/boot/Image | grep "5.15.178" | head -5
-          echo ""
-          echo "=== WiFi config ==="
-          grep -E "CONFIG_(CFG80211|MAC80211|ATH9K_HTC)=" out/.config || true
-          echo ""
-          echo "=== Module count ==="
-          find out/ -name "*.ko" 2>/dev/null | wc -l
+          echo "=== Built modules ==="
+          find out/ -name "*.ko" | sort
+          echo "Total: $(find out/ -name '*.ko' | wc -l) modules"
+
+      - name: Verify WiFi modules
+        run: |
+          cd kernel
+          echo "=== WiFi module check ==="
+          for mod in ath9k_htc ath9k_common ath9k_hw ath_common cfg80211 mac80211; do
+            f=$(find out/ -name "${mod}.ko" 2>/dev/null | head -1)
+            if [ -n "$f" ]; then
+              echo "FOUND: $f ($(stat -c%s "$f") bytes)"
+              modinfo "$f" 2>/dev/null | grep -E "vermagic|depends" || true
+            else
+              echo "MISSING: ${mod}.ko"
+            fi
+          done
 
       - name: Download AR9271 firmware
-        if: success()
         run: |
           mkdir -p artifact/firmware/ath9k_htc
           wget -q "https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/ath9k_htc/htc_9271-1.4.0.fw" \
@@ -276,25 +210,80 @@ jobs:
           curl -sfL "https://raw.githubusercontent.com/endlessm/linux-firmware/master/ath9k_htc/htc_9271-1.4.0.fw" \
             -o artifact/firmware/ath9k_htc/htc_9271-1.4.0.fw || \
           echo "WARNING: Firmware download failed"
-          ls -lh artifact/firmware/ath9k_htc/ 2>/dev/null || true
 
-      - name: Collect artifacts
-        if: always()
+      - name: Package modules
         run: |
-          mkdir -p artifact
-          cp kernel/out/arch/arm64/boot/Image artifact/ 2>/dev/null || true
-          find kernel/out/ -name "*.ko" -exec cp {} artifact/ \; 2>/dev/null || true
-          cp kernel/build.log artifact/ 2>/dev/null || true
-          cp kernel/out/.config artifact/kernel_config.txt 2>/dev/null || true
+          cd kernel
+          mkdir -p $GITHUB_WORKSPACE/artifact/modules
+
+          # Copy WiFi-related modules
+          for mod in ath9k_htc ath9k_common ath9k_hw ath_common cfg80211 mac80211 compat; do
+            f=$(find out/ -name "${mod}.ko" 2>/dev/null | head -1)
+            if [ -n "$f" ]; then
+              cp "$f" $GITHUB_WORKSPACE/artifact/modules/
+            fi
+          done
+
+          # Also copy ALL modules for reference
+          mkdir -p $GITHUB_WORKSPACE/artifact/all_modules
+          find out/ -name "*.ko" -exec cp {} $GITHUB_WORKSPACE/artifact/all_modules/ \;
+
+          cp build.log $GITHUB_WORKSPACE/artifact/ 2>/dev/null || true
+          cp out/.config $GITHUB_WORKSPACE/artifact/kernel_config.txt 2>/dev/null || true
+
+          # Create install script
+          cat > $GITHUB_WORKSPACE/artifact/install_wifi.sh << 'INSTALL'
+          #!/system/bin/sh
+          # Run as root: su -c "sh /sdcard/install_wifi.sh"
+          MODULE_DIR="/vendor/lib/modules"
+          FW_DIR="/vendor/firmware/ath9k_htc"
+
+          echo "=== Installing NetHunter WiFi modules ==="
+          mount -o remount,rw /vendor 2>/dev/null || true
+
+          mkdir -p "$MODULE_DIR"
+          mkdir -p "$FW_DIR"
+
+          # Copy modules
+          for mod in cfg80211.ko mac80211.ko ath_common.ko ath9k_hw.ko ath9k_common.ko ath9k_htc.ko; do
+            if [ -f "/sdcard/nethunter_modules/$mod" ]; then
+              cp "/sdcard/nethunter_modules/$mod" "$MODULE_DIR/"
+              echo "Installed: $mod"
+            fi
+          done
+
+          # Copy firmware
+          if [ -f "/sdcard/nethunter_modules/htc_9271-1.4.0.fw" ]; then
+            cp "/sdcard/nethunter_modules/htc_9271-1.4.0.fw" "$FW_DIR/"
+            echo "Installed: AR9271 firmware"
+          fi
+
+          # Load modules in order
+          echo "=== Loading modules ==="
+          insmod "$MODULE_DIR/cfg80211.ko" 2>/dev/null && echo "Loaded: cfg80211" || echo "Failed: cfg80211 (may already be loaded)"
+          insmod "$MODULE_DIR/mac80211.ko" 2>/dev/null && echo "Loaded: mac80211" || echo "Failed: mac80211"
+          insmod "$MODULE_DIR/ath_common.ko" 2>/dev/null && echo "Loaded: ath_common" || echo "Failed: ath_common"
+          insmod "$MODULE_DIR/ath9k_hw.ko" 2>/dev/null && echo "Loaded: ath9k_hw" || echo "Failed: ath9k_hw"
+          insmod "$MODULE_DIR/ath9k_common.ko" 2>/dev/null && echo "Loaded: ath9k_common" || echo "Failed: ath9k_common"
+          insmod "$MODULE_DIR/ath9k_htc.ko" 2>/dev/null && echo "Loaded: ath9k_htc" || echo "Failed: ath9k_htc"
+
           echo ""
-          echo "=== Final artifacts ==="
-          ls -lh artifact/
+          echo "=== Checking ==="
+          lsmod | grep ath
+          dmesg | grep -i ath9k | tail -5
+          echo "Done! Plug in AR9271 adapter now."
+          INSTALL
+          chmod +x $GITHUB_WORKSPACE/artifact/install_wifi.sh
+
+          echo "=== Artifact contents ==="
+          find $GITHUB_WORKSPACE/artifact/ -type f | head -30
+          echo "WiFi modules:"
+          ls -lh $GITHUB_WORKSPACE/artifact/modules/
 
       - name: Upload artifacts
-        if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-nethunter-rmx3830
+          name: nethunter-wifi-modules-rmx3830
           path: artifact/
           retention-days: 14
 
