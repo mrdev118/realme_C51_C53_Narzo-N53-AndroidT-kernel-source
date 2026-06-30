@@ -118,11 +118,16 @@ jobs:
           CONFIG_MODULES=y
           CONFIG_MODULE_UNLOAD=y
           CONFIG_MODULE_FORCE_UNLOAD=y
+          CONFIG_MODULE_FORCE_LOAD=y
           CONFIG_MODVERSIONS=y
           CONFIG_SMP=y
           CONFIG_PREEMPT=y
           CONFIG_LOCALVERSION="-android13-8-ge7eb24fc4398-ab516"
           CONFIG_LOCALVERSION_AUTO=n
+          # Disable KASAN to avoid __asan_* symbol deps
+          # CONFIG_KASAN is not set
+          # CONFIG_KASAN_GENERIC is not set
+          # CONFIG_KASAN_SW_TAGS is not set
           EOF
 
           # Strip leading whitespace from heredoc
@@ -141,6 +146,89 @@ jobs:
           grep "CONFIG_CFG80211" out/.config | head -3
           grep "CONFIG_LOCALVERSION=" out/.config
           grep "CONFIG_MODVERSIONS" out/.config
+
+      - name: Inject stock Module.symvers for CRC matching
+        run: |
+          cd kernel
+
+          # Start with the Module.symvers from the repo (extracted from stock modules)
+          cp $GITHUB_WORKSPACE/realme-src/Module.symvers out/Module.symvers
+          echo "=== Base Module.symvers: $(wc -l < out/Module.symvers) entries ==="
+
+          # Extract additional CRCs from stock modules
+          if [ -f "$GITHUB_WORKSPACE/realme-src/stock_modules.tar.gz" ]; then
+            mkdir -p /tmp/stock_modules
+            tar xzf "$GITHUB_WORKSPACE/realme-src/stock_modules.tar.gz" -C /tmp/stock_modules/
+            echo "=== Stock modules extracted: $(find /tmp/stock_modules -name '*.ko' | wc -l) ==="
+
+            # Extract __versions CRCs from each stock module using modinfo/objdump
+            python3 << 'PYEOF'
+          import struct, os, glob
+
+          def parse_elf_versions(filepath):
+              crc_map = {}
+              with open(filepath, 'rb') as f:
+                  data = f.read()
+              if data[:4] != b'\x7fELF':
+                  return crc_map
+              e_shoff = struct.unpack('<Q', data[40:48])[0]
+              e_shentsize = struct.unpack('<H', data[58:60])[0]
+              e_shnum = struct.unpack('<H', data[60:62])[0]
+              e_shstrndx = struct.unpack('<H', data[62:64])[0]
+              shstr_offset = e_shoff + e_shstrndx * e_shentsize
+              shstr_sh_offset = struct.unpack('<Q', data[shstr_offset+24:shstr_offset+32])[0]
+              shstr_sh_size = struct.unpack('<Q', data[shstr_offset+32:shstr_offset+40])[0]
+              shstrtab = data[shstr_sh_offset:shstr_sh_offset+shstr_sh_size]
+              for i in range(e_shnum):
+                  sh_offset = e_shoff + i * e_shentsize
+                  sh_name_idx = struct.unpack('<I', data[sh_offset:sh_offset+4])[0]
+                  name_end = shstrtab.find(b'\x00', sh_name_idx)
+                  section_name = shstrtab[sh_name_idx:name_end].decode('ascii', errors='ignore')
+                  if section_name == '__versions':
+                      sh_sec_offset = struct.unpack('<Q', data[sh_offset+24:sh_offset+32])[0]
+                      sh_sec_size = struct.unpack('<Q', data[sh_offset+32:sh_offset+40])[0]
+                      entry_size = 64
+                      for j in range(0, sh_sec_size - entry_size + 1, entry_size):
+                          pos = sh_sec_offset + j
+                          crc = struct.unpack('<I', data[pos:pos+4])[0]
+                          name_bytes = data[pos+8:pos+entry_size]
+                          null_idx = name_bytes.find(b'\x00')
+                          if null_idx > 0 and crc != 0:
+                              name = name_bytes[:null_idx].decode('ascii', errors='ignore')
+                              if name and all(c.isalnum() or c == '_' for c in name):
+                                  crc_map[name] = crc
+                      break
+              return crc_map
+
+          # Read existing Module.symvers
+          existing = {}
+          with open('out/Module.symvers') as f:
+              for line in f:
+                  parts = line.strip().split('\t')
+                  if len(parts) >= 2:
+                      existing[parts[1]] = parts[0]
+
+          # Extract from all stock modules
+          all_crcs = {}
+          for ko in glob.glob('/tmp/stock_modules/*.ko'):
+              crcs = parse_elf_versions(ko)
+              for sym, crc in crcs.items():
+                  all_crcs[sym] = f'0x{crc:08x}'
+
+          # Merge: stock module CRCs override
+          for sym, crc in all_crcs.items():
+              existing[sym] = crc
+
+          # Write merged Module.symvers
+          with open('out/Module.symvers', 'w') as f:
+              for name in sorted(existing.keys()):
+                  f.write(f'{existing[name]}\t{name}\tvmlinux\tEXPORT_SYMBOL_GPL\n')
+
+          print(f'Final Module.symvers: {len(existing)} entries')
+          PYEOF
+          fi
+
+          echo "=== Final Module.symvers: $(wc -l < out/Module.symvers) entries ==="
 
       - name: Patch check_version for CRC bypass
         run: |
