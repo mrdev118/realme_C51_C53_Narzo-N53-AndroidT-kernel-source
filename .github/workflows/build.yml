@@ -40,12 +40,18 @@ jobs:
             https://gitlab.com/ThankYouMario/android_prebuilts_clang-standalone/ clang
           clang/bin/clang --version | head -2
 
-      - name: Clone AOSP GKI 5.15 kernel
+      - name: Clone AOSP GKI 5.15 kernel (Exact Stock Commit)
         run: |
-          git clone --depth=1 -b android13-5.15 \
-            https://android.googlesource.com/kernel/common kernel
-
+          mkdir kernel
           cd kernel
+          git init
+          git remote add origin https://android.googlesource.com/kernel/common
+          # Fetch only the exact commit SHA from stock kernel vermagic (e7eb24fc4398)
+          git fetch --depth=1 origin e7eb24fc4398d5a17688ad621f8a8461abdc0f86 || \
+          git fetch --depth=1 origin e7eb24fc4398
+          git checkout FETCH_HEAD
+
+          echo "=== Kernel version from Makefile ==="
           head -5 Makefile
 
           # Force SUBLEVEL to 178 to match stock
@@ -146,6 +152,58 @@ jobs:
           grep "CONFIG_CFG80211" out/.config | head -3
           grep "CONFIG_LOCALVERSION=" out/.config
           grep "CONFIG_MODVERSIONS" out/.config
+
+      - name: Patch mac80211 to implement missing wiphy work helpers locally
+        run: |
+          cd kernel
+          python3 -c "
+          import os
+
+          main_c_path = 'net/mac80211/main.c'
+          if os.path.exists(main_c_path):
+              print('Patching net/mac80211/main.c...')
+              with open(main_c_path, 'a') as f:
+                  f.write('''
+
+          /* NetHunter: Implement missing wiphy work/delayed-work helpers locally */
+          #include <net/cfg80211.h>
+          #include <linux/workqueue.h>
+
+          void wiphy_work_queue(struct wiphy *wiphy, struct work_struct *work)
+          {
+              schedule_work(work);
+          }
+          EXPORT_SYMBOL(wiphy_work_queue);
+
+          bool wiphy_work_cancel(struct wiphy *wiphy, struct work_struct *work)
+          {
+              return cancel_work_sync(work);
+          }
+          EXPORT_SYMBOL(wiphy_work_cancel);
+
+          void wiphy_delayed_work_queue(struct wiphy *wiphy, struct delayed_work *dwork, unsigned long delay)
+          {
+              schedule_delayed_work(dwork, delay);
+          }
+          EXPORT_SYMBOL(wiphy_delayed_work_queue);
+
+          bool wiphy_delayed_work_cancel(struct wiphy *wiphy, struct delayed_work *dwork)
+          {
+              return cancel_delayed_work_sync(dwork);
+          }
+          EXPORT_SYMBOL(wiphy_delayed_work_cancel);
+
+          void wiphy_delayed_work_timer(struct timer_list *t)
+          {
+              /* Dummy stub to satisfy unresolved references if any */
+          }
+          EXPORT_SYMBOL(wiphy_delayed_work_timer);
+          ''')
+              print('SUCCESS: Patched net/mac80211/main.c')
+          else:
+              print('ERROR: net/mac80211/main.c not found!')
+              exit(1)
+          "
 
       - name: Inject stock Module.symvers for CRC matching
         run: |
