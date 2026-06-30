@@ -148,12 +148,13 @@ jobs:
           grep "CONFIG_LOCALVERSION=" out/.config
           grep "CONFIG_MODVERSIONS" out/.config
 
-      - name: Patch mac80211 to implement missing wiphy work helpers locally
+      - name: Patch mac80211 and cfg80211 to implement missing wiphy work helpers locally
         run: |
           cd kernel
           python3 -c "
-          import os
+          import os, re
 
+          # 1. Patch net/mac80211/main.c to define the helpers
           main_c_path = 'net/mac80211/main.c'
           if os.path.exists(main_c_path):
               print('Patching net/mac80211/main.c...')
@@ -283,6 +284,35 @@ jobs:
           else:
               print('ERROR: net/mac80211/main.c not found!')
               exit(1)
+
+          # 2. Patch net/wireless/core.c to remove duplicate exports
+          core_c_path = 'net/wireless/core.c'
+          if os.path.exists(core_c_path):
+              print('Patching net/wireless/core.c...')
+              with open(core_c_path, 'r') as f:
+                  content = f.read()
+              
+              # Remove EXPORT_SYMBOL(...) lines for these functions
+              exports_to_remove = [
+                  r'EXPORT_SYMBOL\s*\(\s*wiphy_work_queue\s*\)\s*;',
+                  r'EXPORT_SYMBOL\s*\(\s*wiphy_work_cancel\s*\)\s*;',
+                  r'EXPORT_SYMBOL\s*\(\s*wiphy_delayed_work_queue\s*\)\s*;',
+                  r'EXPORT_SYMBOL\s*\(\s*wiphy_delayed_work_cancel\s*\)\s*;',
+                  r'EXPORT_SYMBOL\s*\(\s*wiphy_delayed_work_timer\s*\)\s*;'
+              ]
+              
+              original_len = len(content)
+              for pattern in exports_to_remove:
+                  content = re.sub(pattern, '/* Removed by NetHunter */', content)
+              
+              if len(content) != original_len:
+                  with open(core_c_path, 'w') as f:
+                      f.write(content)
+                  print('SUCCESS: Removed duplicate exports from net/wireless/core.c')
+              else:
+                  print('WARNING: No duplicate exports found or already removed')
+          else:
+              print('WARNING: net/wireless/core.c not found')
           "
 
       - name: Inject stock Module.symvers for CRC matching
@@ -395,6 +425,7 @@ jobs:
       - name: Build WiFi modules
         timeout-minutes: 60
         run: |
+          set -o pipefail
           cd kernel
           export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
 
