@@ -40,16 +40,12 @@ jobs:
             https://gitlab.com/ThankYouMario/android_prebuilts_clang-standalone/ clang
           clang/bin/clang --version | head -2
 
-      - name: Clone AOSP GKI 5.15 kernel (Exact Stock Commit)
+      - name: Clone AOSP GKI 5.15 kernel
         run: |
-          # Shallow clone the tag containing our commit (much faster than full clone)
-          git clone --depth=500 -b android13-5.15.178_r00 \
+          git clone --depth=1 -b android13-5.15 \
             https://android.googlesource.com/kernel/common kernel
-          
-          cd kernel
-          # Checkout the exact stock commit hash locally
-          git checkout e7eb24fc4398d5a17688ad621f8a8461abdc0f86 || git checkout e7eb24fc4398
 
+          cd kernel
           echo "=== Kernel version from Makefile ==="
           head -5 Makefile
 
