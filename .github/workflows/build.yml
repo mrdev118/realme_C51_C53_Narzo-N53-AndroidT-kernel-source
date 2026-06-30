@@ -163,34 +163,119 @@ jobs:
           /* NetHunter: Implement missing wiphy work/delayed-work helpers locally */
           #include <net/cfg80211.h>
           #include <linux/workqueue.h>
+          #include <linux/slab.h>
 
-          void wiphy_work_queue(struct wiphy *wiphy, struct work_struct *work)
+          struct mac80211_wiphy_work_wrapper {
+              struct work_struct work;
+              struct wiphy *wiphy;
+              struct wiphy_work *wiphy_work;
+          };
+
+          struct mac80211_wiphy_delayed_work_wrapper {
+              struct delayed_work dwork;
+              struct wiphy *wiphy;
+              struct wiphy_delayed_work *wiphy_dwork;
+          };
+
+          static void mac80211_wiphy_work_func(struct work_struct *work)
           {
-              schedule_work(work);
+              struct mac80211_wiphy_work_wrapper *wrapper = 
+                  container_of(work, struct mac80211_wiphy_work_wrapper, work);
+              struct wiphy_work *wiphy_work = wrapper->wiphy_work;
+              
+              if (wiphy_work) {
+                  wiphy_work->entry.next = NULL;
+                  if (wiphy_work->func)
+                      wiphy_work->func(wrapper->wiphy, wiphy_work);
+              }
+              kfree(wrapper);
+          }
+
+          void wiphy_work_queue(struct wiphy *wiphy, struct wiphy_work *work)
+          {
+              struct mac80211_wiphy_work_wrapper *wrapper;
+              
+              if (work->entry.next)
+                  return;
+                  
+              wrapper = kmalloc(sizeof(*wrapper), GFP_ATOMIC);
+              if (!wrapper)
+                  return;
+                  
+              wrapper->wiphy = wiphy;
+              wrapper->wiphy_work = work;
+              INIT_WORK(&wrapper->work, mac80211_wiphy_work_func);
+              
+              work->entry.next = (struct list_head *)wrapper;
+              schedule_work(&wrapper->work);
           }
           EXPORT_SYMBOL(wiphy_work_queue);
 
-          bool wiphy_work_cancel(struct wiphy *wiphy, struct work_struct *work)
+          void wiphy_work_cancel(struct wiphy *wiphy, struct wiphy_work *work)
           {
-              return cancel_work_sync(work);
+              struct mac80211_wiphy_work_wrapper *wrapper = 
+                  (struct mac80211_wiphy_work_wrapper *)work->entry.next;
+                  
+              if (wrapper) {
+                  if (cancel_work_sync(&wrapper->work)) {
+                      kfree(wrapper);
+                  }
+                  work->entry.next = NULL;
+              }
           }
           EXPORT_SYMBOL(wiphy_work_cancel);
 
-          void wiphy_delayed_work_queue(struct wiphy *wiphy, struct delayed_work *dwork, unsigned long delay)
+          static void mac80211_wiphy_delayed_work_func(struct work_struct *work)
           {
-              schedule_delayed_work(dwork, delay);
+              struct mac80211_wiphy_delayed_work_wrapper *wrapper = 
+                  container_of(to_delayed_work(work), struct mac80211_wiphy_delayed_work_wrapper, dwork);
+              struct wiphy_delayed_work *wiphy_dwork = wrapper->wiphy_dwork;
+              
+              if (wiphy_dwork) {
+                  wiphy_dwork->work.entry.next = NULL;
+                  if (wiphy_dwork->work.func)
+                      wiphy_dwork->work.func(wrapper->wiphy, &wiphy_dwork->work);
+              }
+              kfree(wrapper);
+          }
+
+          void wiphy_delayed_work_queue(struct wiphy *wiphy, struct wiphy_delayed_work *dwork, unsigned long delay)
+          {
+              struct mac80211_wiphy_delayed_work_wrapper *wrapper;
+              
+              if (dwork->work.entry.next)
+                  return;
+                  
+              wrapper = kmalloc(sizeof(*wrapper), GFP_ATOMIC);
+              if (!wrapper)
+                  return;
+                  
+              wrapper->wiphy = wiphy;
+              wrapper->wiphy_dwork = dwork;
+              INIT_DELAYED_WORK(&wrapper->dwork, mac80211_wiphy_delayed_work_func);
+              
+              dwork->work.entry.next = (struct list_head *)wrapper;
+              schedule_delayed_work(&wrapper->dwork, delay);
           }
           EXPORT_SYMBOL(wiphy_delayed_work_queue);
 
-          bool wiphy_delayed_work_cancel(struct wiphy *wiphy, struct delayed_work *dwork)
+          void wiphy_delayed_work_cancel(struct wiphy *wiphy, struct wiphy_delayed_work *dwork)
           {
-              return cancel_delayed_work_sync(dwork);
+              struct mac80211_wiphy_delayed_work_wrapper *wrapper = 
+                  (struct mac80211_wiphy_delayed_work_wrapper *)dwork->work.entry.next;
+                  
+              if (wrapper) {
+                  if (cancel_delayed_work_sync(&wrapper->dwork)) {
+                      kfree(wrapper);
+                  }
+                  dwork->work.entry.next = NULL;
+              }
           }
           EXPORT_SYMBOL(wiphy_delayed_work_cancel);
 
           void wiphy_delayed_work_timer(struct timer_list *t)
           {
-              /* Dummy stub to satisfy unresolved references if any */
+              /* Dummy stub */
           }
           EXPORT_SYMBOL(wiphy_delayed_work_timer);
           ''')
