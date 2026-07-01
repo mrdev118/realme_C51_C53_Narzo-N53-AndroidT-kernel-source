@@ -148,18 +148,25 @@ jobs:
           grep "CONFIG_LOCALVERSION=" out/.config
           grep "CONFIG_MODVERSIONS" out/.config
 
-      - name: Patch mac80211 and cfg80211 to implement missing wiphy work helpers locally
+      - name: Patch mac80211 wiphy work helpers (only if tree lacks them)
         run: |
           cd kernel
+          # The modern android13-5.15 tree already EXPORTS the wiphy_work API from cfg80211.
+          # If we also define/export it in mac80211 we get:
+          #   FATAL: modpost: 'wiphy_work_queue' exported twice (previous export in cfg80211.ko)
+          # So only inject our fallback when the tree does NOT already export the symbol.
+          if grep -rIlE 'EXPORT_SYMBOL(_GPL)?[[:space:]]*\([[:space:]]*wiphy_work_queue[[:space:]]*\)' net/wireless/ >/dev/null 2>&1; then
+            echo "SKIP: cfg80211 already exports wiphy_work_queue in this tree; no patch needed."
+            exit 0
+          fi
+          echo "cfg80211 lacks wiphy_work_queue; injecting fallback into net/mac80211/main.c"
           python3 -c "
-          import os, re
-
-          # 1. Patch net/mac80211/main.c to define the helpers
+          import os
           main_c_path = 'net/mac80211/main.c'
-          if os.path.exists(main_c_path):
-              print('Patching net/mac80211/main.c...')
-              with open(main_c_path, 'a') as f:
-                  f.write('''
+          if not os.path.exists(main_c_path):
+              print('ERROR: net/mac80211/main.c not found!'); raise SystemExit(1)
+          with open(main_c_path, 'a') as f:
+              f.write('''
 
           /* NetHunter: Implement missing wiphy work/delayed-work helpers locally */
           #include <net/cfg80211.h>
@@ -280,42 +287,9 @@ jobs:
           }
           EXPORT_SYMBOL(wiphy_delayed_work_timer);
           ''')
-              print('SUCCESS: Patched net/mac80211/main.c')
-          else:
-              print('ERROR: net/mac80211/main.c not found!')
-              exit(1)
-
-          # 2. Patch net/wireless/core.c to remove duplicate exports
-          core_c_path = 'net/wireless/core.c'
-          if os.path.exists(core_c_path):
-              print('Patching net/wireless/core.c...')
-              with open(core_c_path, 'r') as f:
-                  content = f.read()
-              
-              # Remove EXPORT_SYMBOL_GPL(...) lines for these functions
-              exports_to_remove = [
-                  r'EXPORT_SYMBOL(_GPL)?\s*\(\s*wiphy_work_queue\s*\)\s*;',
-                  r'EXPORT_SYMBOL(_GPL)?\s*\(\s*wiphy_work_cancel\s*\)\s*;',
-                  r'EXPORT_SYMBOL(_GPL)?\s*\(\s*wiphy_delayed_work_queue\s*\)\s*;',
-                  r'EXPORT_SYMBOL(_GPL)?\s*\(\s*wiphy_delayed_work_cancel\s*\)\s*;',
-                  r'EXPORT_SYMBOL(_GPL)?\s*\(\s*wiphy_delayed_work_timer\s*\)\s*;'
-              ]
-              
-              original_len = len(content)
-              for pattern in exports_to_remove:
-                  content = re.sub(pattern, '/* Removed by NetHunter */', content)
-              
-              if len(content) == original_len:
-                  print('ERROR: Failed to find/remove duplicate exports in net/wireless/core.c!')
-                  exit(1)
-              else:
-                  with open(core_c_path, 'w') as f:
-                      f.write(content)
-                  print('SUCCESS: Removed duplicate exports from net/wireless/core.c')
-          else:
-              print('ERROR: net/wireless/core.c not found!')
-              exit(1)
+          print('SUCCESS: Patched net/mac80211/main.c')
           "
+
 
       - name: Inject stock Module.symvers for CRC matching
         run: |
