@@ -292,27 +292,29 @@ jobs:
               with open(core_c_path, 'r') as f:
                   content = f.read()
               
-              # Remove EXPORT_SYMBOL(...) lines for these functions
+              # Remove EXPORT_SYMBOL_GPL(...) lines for these functions
               exports_to_remove = [
-                  r'EXPORT_SYMBOL\s*\(\s*wiphy_work_queue\s*\)\s*;',
-                  r'EXPORT_SYMBOL\s*\(\s*wiphy_work_cancel\s*\)\s*;',
-                  r'EXPORT_SYMBOL\s*\(\s*wiphy_delayed_work_queue\s*\)\s*;',
-                  r'EXPORT_SYMBOL\s*\(\s*wiphy_delayed_work_cancel\s*\)\s*;',
-                  r'EXPORT_SYMBOL\s*\(\s*wiphy_delayed_work_timer\s*\)\s*;'
+                  r'EXPORT_SYMBOL(_GPL)?\s*\(\s*wiphy_work_queue\s*\)\s*;',
+                  r'EXPORT_SYMBOL(_GPL)?\s*\(\s*wiphy_work_cancel\s*\)\s*;',
+                  r'EXPORT_SYMBOL(_GPL)?\s*\(\s*wiphy_delayed_work_queue\s*\)\s*;',
+                  r'EXPORT_SYMBOL(_GPL)?\s*\(\s*wiphy_delayed_work_cancel\s*\)\s*;',
+                  r'EXPORT_SYMBOL(_GPL)?\s*\(\s*wiphy_delayed_work_timer\s*\)\s*;'
               ]
               
               original_len = len(content)
               for pattern in exports_to_remove:
                   content = re.sub(pattern, '/* Removed by NetHunter */', content)
               
-              if len(content) != original_len:
+              if len(content) == original_len:
+                  print('ERROR: Failed to find/remove duplicate exports in net/wireless/core.c!')
+                  exit(1)
+              else:
                   with open(core_c_path, 'w') as f:
                       f.write(content)
                   print('SUCCESS: Removed duplicate exports from net/wireless/core.c')
-              else:
-                  print('WARNING: No duplicate exports found or already removed')
           else:
-              print('WARNING: net/wireless/core.c not found')
+              print('ERROR: net/wireless/core.c not found!')
+              exit(1)
           "
 
       - name: Inject stock Module.symvers for CRC matching
