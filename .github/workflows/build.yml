@@ -307,9 +307,11 @@ jobs:
           echo "=== Preparing kernel headers/scripts (no vmlinux link) ==="
           make "${common_args[@]}" -j$(nproc) modules_prepare
 
-          # modules_prepare intentionally does not generate Module.symvers when
-          # CONFIG_MODVERSIONS=y. Restore the stock RMX3830 symbol CRC table.
-          cp $GITHUB_WORKSPACE/realme-src/Module.symvers out/Module.symvers
+          # modules_prepare does not generate Module.symvers with
+          # CONFIG_MODVERSIONS=y; preserve the validated five-field stock table
+          # created by the previous step.
+          test -s out/Module.symvers
+          awk -F '\t' 'NF != 5 { bad++ } END { exit bad ? 1 : 0 }' out/Module.symvers
 
           echo "=== Building mac80211 as an external module tree ==="
           make "${common_args[@]}" \
