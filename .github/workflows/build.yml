@@ -130,6 +130,18 @@ jobs:
           # Strip leading whitespace from heredoc
           sed -i 's/^          //' out/.config
 
+          # Match the stock RMX3830 Android 15 kernel's Clang hardening ABI.
+          # CFI type hashes affect indirect calls from module tracepoints; loading
+          # a non-CFI mac80211 module into this kernel causes an immediate panic.
+          scripts/config --file out/.config \
+            --disable LTO_NONE \
+            --enable LTO_CLANG_FULL \
+            --disable LTO_CLANG_THIN \
+            --enable CFI_CLANG \
+            --enable CFI_CLANG_SHADOW \
+            --disable CFI_PERMISSIVE \
+            --enable SHADOW_CALL_STACK
+
           # Resolve dependencies
           make O=out ARCH=arm64 \
             CC=clang \
@@ -143,6 +155,24 @@ jobs:
           grep "CONFIG_CFG80211" out/.config | head -3
           grep "CONFIG_LOCALVERSION=" out/.config
           grep "CONFIG_MODVERSIONS" out/.config
+
+          echo "=== Stock CFI/LTO ABI check ==="
+          required_config=(
+            CONFIG_LTO=y
+            CONFIG_LTO_CLANG=y
+            CONFIG_LTO_CLANG_FULL=y
+            CONFIG_CFI_CLANG=y
+            CONFIG_CFI_CLANG_SHADOW=y
+            CONFIG_SHADOW_CALL_STACK=y
+          )
+          for setting in "${required_config[@]}"; do
+            grep -qx "$setting" out/.config || {
+              echo "FATAL: required stock setting missing: $setting"
+              exit 1
+            }
+          done
+          grep -qx '# CONFIG_LTO_NONE is not set' out/.config
+          grep -qx '# CONFIG_CFI_PERMISSIVE is not set' out/.config
 
 
       - name: Inject stock Module.symvers for CRC matching
