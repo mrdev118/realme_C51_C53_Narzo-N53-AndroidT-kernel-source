@@ -161,11 +161,36 @@ su -c ar9271-monitor stop
 
 After `wlan1mon` exists, Kali tools can target it. If a Kali tool still reports raw-socket permission errors, start that operation from a real-root Termux/Android context rather than relying on PRoot's fake root.
 
-## 9. What is persistent and what is temporary
+## 9. Disconnect panic discovered after the successful monitor test
+
+The adapter worked while attached, but unplugging the hub triggered:
+
+```text
+Unable to handle kernel paging request at virtual address 0x20020
+pc: rfkill_pause_polling+0x18/0x50
+lr: ath9k_htc_disconnect_device+0x54/0x17c [ath9k_htc]
+ath9k_hif_usb_disconnect
+usb_unbind_interface
+usb_disconnect
+Kernel panic - not syncing: Oops: Fatal exception
+```
+
+Register `x0` was `0x20000`, showing that `rfkill_pause_polling` received a bogus pointer. The likely cause is a conditional structure-layout mismatch in public cfg80211/mac80211 headersâ€”especially `struct wiphy`â€”because run 88 matched security flags and symbol CRCs but did not use the phone's complete `/proc/config.gz`.
+
+The GitHub repository's published vendor tree is kernel 5.4.210, while this updated phone runs 5.15.178. That 5.4 source cannot define the current phone's exact wireless ABI. The safe next build must use the phone's complete 5.15 config and compare BTF/DWARF layouts before loading.
+
+After the panic was diagnosed:
+
+- `/data/adb/modules/ar9271_rmx3830/disable` was created;
+- `ath9k_htc`, `ath9k_common`, `ath9k_hw`, `ath`, and `mac80211` were unloaded safely with no adapter attached;
+- stock `cfg80211` and `sprd_wlan_combo` remained;
+- full pstore files were copied into `pstore_disconnect_panic/`.
+
+## 10. What is persistent and what is temporary
 
 - Run-88 modules and live monitor mode: verified.
 - Backup artifact and Magisk ZIP: created.
-- Magisk boot module: prepared from verified files.
-- Reboot persistence: must be marked verified only after a controlled reboot with the Magisk module enabled.
-
+- Magisk boot loading: verified, but disabled because disconnect is unsafe.
+- Current run-88 Magisk ZIP: forensic backup only; do not install.
+- Safe persistence: not achieved until a new full-config build passes attach, monitor, and disconnect tests.
 
