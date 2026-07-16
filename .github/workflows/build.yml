@@ -8,7 +8,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 120
+    timeout-minutes: 180
 
     steps:
       - name: Free disk space
@@ -283,7 +283,9 @@ jobs:
         run: echo "" > kernel/.scmversion
 
       - name: Build WiFi modules
-        timeout-minutes: 60
+        # Full Clang LTO links vmlinux.o before final module modpost. Run 82
+        # reached that final link when the previous 60-minute limit sent SIGTERM.
+        timeout-minutes: 120
         run: |
           set -o pipefail
           cd kernel
