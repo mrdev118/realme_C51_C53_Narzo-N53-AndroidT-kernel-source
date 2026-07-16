@@ -314,15 +314,16 @@ jobs:
           awk -F '\t' 'NF != 5 { bad++ } END { exit bad ? 1 : 0 }' out/Module.symvers
 
           echo "=== Building mac80211 as an external module tree ==="
+          # External modpost automatically reads out/Module.symvers.
           make "${common_args[@]}" \
             M=$PWD/net/mac80211 \
-            KBUILD_EXTRA_SYMBOLS=$PWD/out/Module.symvers \
             -j$(nproc) modules 2>&1 | tee build.log
 
           echo "=== Building ath/ath9k/ath9k_htc as an external module tree ==="
           make "${common_args[@]}" \
             M=$PWD/drivers/net/wireless/ath \
-            KBUILD_EXTRA_SYMBOLS="$PWD/out/Module.symvers $PWD/net/mac80211/Module.symvers" \
+            # out/Module.symvers is automatic; add only mac80211 exports.
+            KBUILD_EXTRA_SYMBOLS=$PWD/net/mac80211/Module.symvers \
             -j$(nproc) modules 2>&1 | tee -a build.log
 
           echo ""
