@@ -320,11 +320,13 @@ jobs:
             -j$(nproc) modules 2>&1 | tee build.log
 
           echo "=== Building ath/ath9k/ath9k_htc as an external module tree ==="
+          # out/Module.symvers is automatic; add only mac80211 exports.
+          set -x
           make "${common_args[@]}" \
             M=$PWD/drivers/net/wireless/ath \
-            # out/Module.symvers is automatic; add only mac80211 exports.
             KBUILD_EXTRA_SYMBOLS=$PWD/net/mac80211/Module.symvers \
             -j$(nproc) modules 2>&1 | tee -a build.log
+          set +x
 
           echo ""
           echo "=== Built WiFi modules ==="
