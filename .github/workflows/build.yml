@@ -282,37 +282,55 @@ jobs:
       - name: Prevent git version suffix
         run: echo "" > kernel/.scmversion
 
-      - name: Build WiFi modules
-        # Full Clang LTO links vmlinux.o before final module modpost. Run 82
-        # reached that final link when the previous 60-minute limit sent SIGTERM.
-        timeout-minutes: 120
+      - name: Build only the WiFi external module trees
+        timeout-minutes: 60
         run: |
           set -o pipefail
           cd kernel
           export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
 
-          echo "=== Building modules ==="
-          make O=out ARCH=arm64 \
-            CC=clang \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            LLVM=1 LLVM_IAS=1 \
-            LOCALVERSION="" \
-            KCFLAGS="-Wno-error" \
-            -j$(nproc) \
-            modules 2>&1 | tee build.log
+          common_args=(
+            O=out
+            ARCH=arm64
+            CC=clang
+            CLANG_TRIPLE=aarch64-linux-gnu-
+            CROSS_COMPILE=aarch64-linux-gnu-
+            LLVM=1
+            LLVM_IAS=1
+            LOCALVERSION=
+            KCFLAGS=-Wno-error
+          )
+
+          echo "=== Preparing kernel headers/scripts (no vmlinux link) ==="
+          make "${common_args[@]}" -j$(nproc) modules_prepare
+
+          # modules_prepare intentionally does not generate Module.symvers when
+          # CONFIG_MODVERSIONS=y. Restore the stock RMX3830 symbol CRC table.
+          cp $GITHUB_WORKSPACE/realme-src/Module.symvers out/Module.symvers
+
+          echo "=== Building mac80211 as an external module tree ==="
+          make "${common_args[@]}" \
+            M=$PWD/net/mac80211 \
+            KBUILD_EXTRA_SYMBOLS=$PWD/out/Module.symvers \
+            -j$(nproc) modules 2>&1 | tee build.log
+
+          echo "=== Building ath/ath9k/ath9k_htc as an external module tree ==="
+          make "${common_args[@]}" \
+            M=$PWD/drivers/net/wireless/ath \
+            KBUILD_EXTRA_SYMBOLS="$PWD/out/Module.symvers $PWD/net/mac80211/Module.symvers" \
+            -j$(nproc) modules 2>&1 | tee -a build.log
 
           echo ""
-          echo "=== Built modules ==="
-          find out/ -name "*.ko" | sort
-          echo "Total: $(find out/ -name '*.ko' | wc -l) modules"
+          echo "=== Built WiFi modules ==="
+          find net/mac80211 drivers/net/wireless/ath -name "*.ko" | sort
+          echo "Total: $(find net/mac80211 drivers/net/wireless/ath -name '*.ko' | wc -l) modules"
 
       - name: Verify WiFi modules
         run: |
           cd kernel
           echo "=== WiFi module check ==="
           for mod in ath9k_htc ath9k_common ath9k_hw ath cfg80211 mac80211; do
-            f=$(find out/ -name "${mod}.ko" 2>/dev/null | head -1)
+            f=$(find net/mac80211 drivers/net/wireless/ath -name "${mod}.ko" 2>/dev/null | head -1)
             if [ -n "$f" ]; then
               echo "FOUND: $f ($(stat -c%s "$f") bytes)"
               modinfo "$f" 2>/dev/null | grep -E "vermagic|depends" || true
@@ -337,7 +355,7 @@ jobs:
 
           # Copy WiFi-related modules
           for mod in ath9k_htc ath9k_common ath9k_hw ath cfg80211 mac80211 compat; do
-            f=$(find out/ -name "${mod}.ko" 2>/dev/null | head -1)
+            f=$(find net/mac80211 drivers/net/wireless/ath -name "${mod}.ko" 2>/dev/null | head -1)
             if [ -n "$f" ]; then
               cp "$f" $GITHUB_WORKSPACE/artifact/modules/
             fi
@@ -345,7 +363,7 @@ jobs:
 
           # Also copy ALL modules for reference
           mkdir -p $GITHUB_WORKSPACE/artifact/all_modules
-          find out/ -name "*.ko" -exec cp {} $GITHUB_WORKSPACE/artifact/all_modules/ \;
+          find net/mac80211 drivers/net/wireless/ath -name "*.ko" -exec cp {} $GITHUB_WORKSPACE/artifact/all_modules/ \;
 
           cp build.log $GITHUB_WORKSPACE/artifact/ 2>/dev/null || true
           cp out/.config $GITHUB_WORKSPACE/artifact/kernel_config.txt 2>/dev/null || true
