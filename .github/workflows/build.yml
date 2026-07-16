@@ -250,13 +250,16 @@ jobs:
           # Write merged Module.symvers
           with open('out/Module.symvers', 'w') as f:
               for name in sorted(existing.keys()):
-                  f.write(f'{existing[name]}\t{name}\tvmlinux\tEXPORT_SYMBOL_GPL\n')
+                  # Android 5.15 modpost requires the fifth (namespace) field.
+                  f.write(f'{existing[name]}\t{name}\tvmlinux\tEXPORT_SYMBOL_GPL\t\n')
 
           print(f'Final Module.symvers: {len(existing)} entries')
           PYEOF
           fi
 
           echo "=== Final Module.symvers: $(wc -l < out/Module.symvers) entries ==="
+          # Validate the five-field Android 5.15 symbol dump format.
+          awk -F '\t' 'NF != 5 { bad++ } END { if (bad) { print "FATAL: " bad " malformed Module.symvers rows"; exit 1 } }' out/Module.symvers
 
       - name: Patch check_version for CRC bypass
         run: |
