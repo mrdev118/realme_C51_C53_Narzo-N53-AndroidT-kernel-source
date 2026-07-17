@@ -302,7 +302,7 @@ jobs:
           readelf -S "$generated_mac" > "$diag/generated-mac80211-sections.txt"
 
           # The stock module uses split BTF, so decode the exact live phone
-          # vmlinux base BTF captured alongside /proc/config.gz.
+          # vmlinux base BTF captured alongside /proc/config.gz (verified SHA-256).
           base_btf="$diag/vmlinux.btf"
           base64 -d "$GITHUB_WORKSPACE/realme-src/kernel_config/RMX3830-Android15-5.15.178-vmlinux.btf.gz.b64" |
             gzip -dc > "$base_btf"
