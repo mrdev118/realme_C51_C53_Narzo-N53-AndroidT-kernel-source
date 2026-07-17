@@ -301,9 +301,17 @@ jobs:
           readelf -S "$stock_cfg" > "$diag/stock-cfg80211-sections.txt"
           readelf -S "$generated_mac" > "$diag/generated-mac80211-sections.txt"
 
+          # The stock module uses split BTF, so decode the exact live phone
+          # vmlinux base BTF captured alongside /proc/config.gz.
+          base_btf="$diag/vmlinux.btf"
+          base64 -d "$GITHUB_WORKSPACE/realme-src/kernel_config/RMX3830-Android15-5.15.178-vmlinux.btf.gz.b64" |
+            gzip -dc > "$base_btf"
+          echo "260e7507699edcb0be87834e4918150001097d75d847df4aeffe1c5efb6c1a06  $base_btf" |
+            sha256sum -c -
+
           # struct wiphy crosses the stock cfg80211/generated mac80211 boundary.
           # Its rfkill member was where run 88 crashed during USB disconnect.
-          pahole -C wiphy "$stock_cfg" > "$diag/wiphy-stock.txt"
+          pahole --btf_base="$base_btf" -C wiphy "$stock_cfg" > "$diag/wiphy-stock.txt"
           pahole -C wiphy "$generated_mac" > "$diag/wiphy-generated.txt"
           diff -u "$diag/wiphy-stock.txt" "$diag/wiphy-generated.txt"             > "$diag/wiphy.diff" || {
               echo "FATAL: struct wiphy differs from the stock cfg80211 ABI"
@@ -313,7 +321,7 @@ jobs:
 
           # Compare more public cfg80211 types when both modules retain them.
           for type in wireless_dev cfg80211_ops ieee80211_channel ieee80211_supported_band; do
-            if pahole -C "$type" "$stock_cfg" > "$diag/$type-stock.txt" 2>/dev/null &&
+            if pahole --btf_base="$base_btf" -C "$type" "$stock_cfg" > "$diag/$type-stock.txt" 2>/dev/null &&
                pahole -C "$type" "$generated_mac" > "$diag/$type-generated.txt" 2>/dev/null; then
               diff -u "$diag/$type-stock.txt" "$diag/$type-generated.txt"                 > "$diag/$type.diff" || {
                   echo "FATAL: struct $type differs from stock"
