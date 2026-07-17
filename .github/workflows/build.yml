@@ -305,7 +305,7 @@ jobs:
           # vmlinux base BTF captured alongside /proc/config.gz (verified SHA-256).
           base_btf="$diag/vmlinux.btf"
           base64 -d "$GITHUB_WORKSPACE/realme-src/kernel_config/RMX3830-Android15-5.15.178-vmlinux.btf.gz.b64" |
-            gzip -dc > "$base_btf"
+            tar -xzOf - vmlinux.btf > "$base_btf"
           echo "260e7507699edcb0be87834e4918150001097d75d847df4aeffe1c5efb6c1a06  $base_btf" |
             sha256sum -c -
 
