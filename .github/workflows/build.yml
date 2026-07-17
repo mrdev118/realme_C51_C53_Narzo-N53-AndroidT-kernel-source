@@ -370,7 +370,7 @@ jobs:
             tee "$diag/wiphy-offset-check.txt"
 
           # Compare more public cfg80211 types using the same real-offset gate.
-          for type in wireless_dev cfg80211_ops ieee80211_channel ieee80211_supported_band; do
+          for type in net_device wireless_dev cfg80211_ops ieee80211_channel ieee80211_supported_band; do
             if pahole --btf_base="$base_btf" -C "$type" "$stock_cfg" > "$diag/$type-stock.txt" 2>/dev/null &&
                pahole -C "$type" "$generated_mac" > "$diag/$type-generated.txt" 2>/dev/null; then
               diff -u "$diag/$type-stock.txt" "$diag/$type-generated.txt" > "$diag/$type.diff" || true
