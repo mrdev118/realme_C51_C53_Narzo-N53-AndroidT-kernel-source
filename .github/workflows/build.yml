@@ -60,127 +60,71 @@ jobs:
           head -5 Makefile
           test "$(grep '^SUBLEVEL' Makefile | awk '{print $3}')" = "178"
 
-      - name: Configure kernel to match stock
+      - name: Configure from exact live RMX3830 config
         run: |
+          set -euo pipefail
           cd kernel
           export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
 
-          # Start with gki_defconfig
-          make ARCH=arm64 O=out gki_defconfig
+          stock_config=$GITHUB_WORKSPACE/realme-src/kernel_config/RMX3830-Android15-5.15.178-stock.config
+          test -s "$stock_config"
+          mkdir -p out
+          cp "$stock_config" out/.config
+          cp "$stock_config" /tmp/phone-stock.config
 
-          # Apply Unisoc fragment
-          python3 << 'PYEOF'
-          import os
-          fragment_path = "$GITHUB_WORKSPACE/realme-src/Documentation/sprd-gki-diff-config"
-          output_path = "/tmp/unisoc_fragment.config"
-          if not os.path.exists(fragment_path):
-              fragment_path = os.environ.get("GITHUB_WORKSPACE", ".") + "/realme-src/Documentation/sprd-gki-diff-config"
-          if not os.path.exists(fragment_path):
-              print("WARNING: sprd-gki-diff-config not found")
-              open(output_path, 'w').close()
-              exit(0)
-          adds, mods, dels = [], [], []
-          with open(fragment_path) as f:
-              for line in f:
-                  line = line.strip()
-                  if not line: continue
-                  if line.startswith("ADD:"): adds.append(f"{line[4:]}=y")
-                  elif line.startswith("MOD:"): mods.append(f"{line[4:]}=m")
-                  elif line.startswith("DEL:"): dels.append(f"# {line[4:]} is not set")
-          with open(output_path, 'w') as f:
-              for x in dels + adds + mods: f.write(x + "\n")
-          print(f"Fragment: {len(adds)} ADD + {len(mods)} MOD + {len(dels)} DEL")
+          # Change only the features needed by mac80211 + AR9271. Keep every
+          # other recognized option from the phone's live /proc/config.gz.
+          scripts/config --file out/.config             --module MAC80211             --enable MAC80211_HAS_RC             --enable MAC80211_RC_MINSTREL             --enable MAC80211_MESH             --enable WLAN_VENDOR_ATH             --module ATH_COMMON             --module ATH9K_HW             --module ATH9K_COMMON             --module ATH9K_HTC             --enable ATH9K_BTCOEX_SUPPORT             --set-str LOCALVERSION "-android13-8-ge7eb24fc4398-ab516"             --disable LOCALVERSION_AUTO
+
+          make O=out ARCH=arm64             CC=clang             CLANG_TRIPLE=aarch64-linux-gnu-             CROSS_COMPILE=aarch64-linux-gnu-             LLVM=1 LLVM_IAS=1             olddefconfig
+
+          mkdir -p $GITHUB_WORKSPACE/artifact/layout
+          python3 - << 'PYEOF'
+          import pathlib
+          def parse(path):
+              out = {}
+              for line in pathlib.Path(path).read_text().splitlines():
+                  if line.startswith("CONFIG_") and "=" in line:
+                      k, v = line.split("=", 1); out[k] = v
+                  elif line.startswith("# CONFIG_") and line.endswith(" is not set"):
+                      out[line[2:-11]] = "n"
+              return out
+          before = parse("/tmp/phone-stock.config")
+          after = parse("out/.config")
+          keys = sorted(set(before) | set(after))
+          lines = [f"{k}: {before.get(k, '<absent>')} -> {after.get(k, '<absent>')}"
+                   for k in keys if before.get(k) != after.get(k)]
+          pathlib.Path("/tmp/config-delta.txt").write_text("\n".join(lines) + "\n")
+          print(f"Config delta: {len(lines)} symbols (full list saved as an artifact)")
+          for line in lines:
+              if line.startswith(("CONFIG_CFG80211", "CONFIG_RFKILL")):
+                  raise SystemExit("FATAL: stock cfg80211/rfkill ABI option changed: " + line)
           PYEOF
+          cp /tmp/config-delta.txt $GITHUB_WORKSPACE/artifact/layout/
 
-          # Append Unisoc fragment
-          if [ -s /tmp/unisoc_fragment.config ]; then
-            cat /tmp/unisoc_fragment.config >> out/.config
-          fi
-
-          # Append WiFi/ath9k config — BUILD AS MODULES (=m)
-          cat >> out/.config << 'EOF'
-          CONFIG_WIRELESS=y
-          CONFIG_WLAN=y
-          CONFIG_CFG80211=m
-          CONFIG_CFG80211_WEXT=y
-          CONFIG_CFG80211_DEFAULT_PS=y
-          CONFIG_MAC80211=m
-          CONFIG_MAC80211_HAS_RC=y
-          CONFIG_MAC80211_RC_MINSTREL=y
-          CONFIG_MAC80211_MESH=y
-          CONFIG_WLAN_VENDOR_ATH=y
-          CONFIG_ATH_COMMON=m
-          CONFIG_ATH9K_HW=m
-          CONFIG_ATH9K_COMMON=m
-          CONFIG_ATH9K_HTC=m
-          CONFIG_ATH9K_BTCOEX_SUPPORT=y
-          CONFIG_USB=y
-          CONFIG_USB_USBNET=m
-          CONFIG_FW_LOADER=y
-          CONFIG_FW_LOADER_USER_HELPER=y
-          CONFIG_FW_LOADER_USER_HELPER_FALLBACK=y
-          CONFIG_MODULES=y
-          CONFIG_MODULE_UNLOAD=y
-          CONFIG_MODULE_FORCE_UNLOAD=y
-          CONFIG_MODULE_FORCE_LOAD=y
-          CONFIG_MODVERSIONS=y
-          CONFIG_SMP=y
-          CONFIG_PREEMPT=y
-          CONFIG_LOCALVERSION="-android13-8-ge7eb24fc4398-ab516"
-          CONFIG_LOCALVERSION_AUTO=n
-          # Disable KASAN to avoid __asan_* symbol deps
-          # CONFIG_KASAN is not set
-          # CONFIG_KASAN_GENERIC is not set
-          # CONFIG_KASAN_SW_TAGS is not set
-          EOF
-
-          # Strip leading whitespace from heredoc
-          sed -i 's/^          //' out/.config
-
-          # Match the stock RMX3830 Android 15 kernel's Clang hardening ABI.
-          # CFI type hashes affect indirect calls from module tracepoints; loading
-          # a non-CFI mac80211 module into this kernel causes an immediate panic.
-          scripts/config --file out/.config \
-            --disable LTO_NONE \
-            --enable LTO_CLANG_FULL \
-            --disable LTO_CLANG_THIN \
-            --enable CFI_CLANG \
-            --enable CFI_CLANG_SHADOW \
-            --disable CFI_PERMISSIVE \
-            --enable SHADOW_CALL_STACK
-
-          # Resolve dependencies
-          make O=out ARCH=arm64 \
-            CC=clang \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            LLVM=1 LLVM_IAS=1 \
-            olddefconfig
-
-          echo "=== Config check ==="
-          grep "CONFIG_ATH9K_HTC" out/.config
-          grep "CONFIG_CFG80211" out/.config | head -3
-          grep "CONFIG_LOCALVERSION=" out/.config
-          grep "CONFIG_MODVERSIONS" out/.config
-
-          echo "=== Stock CFI/LTO ABI check ==="
           required_config=(
-            CONFIG_LTO=y
-            CONFIG_LTO_CLANG=y
+            CONFIG_CFG80211=m
+            CONFIG_MAC80211=m
+            CONFIG_WLAN_VENDOR_ATH=y
+            CONFIG_ATH_COMMON=m
+            CONFIG_ATH9K_HW=m
+            CONFIG_ATH9K_COMMON=m
+            CONFIG_ATH9K_HTC=m
             CONFIG_LTO_CLANG_FULL=y
             CONFIG_CFI_CLANG=y
             CONFIG_CFI_CLANG_SHADOW=y
             CONFIG_SHADOW_CALL_STACK=y
+            CONFIG_MODVERSIONS=y
           )
           for setting in "${required_config[@]}"; do
             grep -qx "$setting" out/.config || {
-              echo "FATAL: required stock setting missing: $setting"
+              echo "FATAL: required setting missing: $setting"
               exit 1
             }
           done
-          grep -qx '# CONFIG_LTO_NONE is not set' out/.config
-          grep -qx '# CONFIG_CFI_PERMISSIVE is not set' out/.config
-
+          grep -qx 'CONFIG_LOCALVERSION="-android13-8-ge7eb24fc4398-ab516"' out/.config
+          grep -qx '# CONFIG_LOCALVERSION_AUTO is not set' out/.config
+          echo "=== Exact-config gate passed ==="
 
       - name: Inject stock Module.symvers for CRC matching
         run: |
@@ -340,6 +284,50 @@ jobs:
           find net/mac80211 drivers/net/wireless/ath -name "*.ko" | sort
           echo "Total: $(find net/mac80211 drivers/net/wireless/ath -name '*.ko' | wc -l) modules"
 
+      - name: Compare stock and generated wireless ABI layouts
+        run: |
+          set -euo pipefail
+          cd kernel
+          diag=$GITHUB_WORKSPACE/artifact/layout
+          mkdir -p "$diag"
+
+          stock_cfg=$(find /tmp/stock_modules -type f -name 'cfg80211.ko' | head -1)
+          generated_mac=$(find net/mac80211 -type f -name 'mac80211.ko' | head -1)
+          test -s "$stock_cfg"
+          test -s "$generated_mac"
+
+          echo "$stock_cfg" > "$diag/stock-cfg80211-path.txt"
+          echo "$generated_mac" > "$diag/generated-mac80211-path.txt"
+          readelf -S "$stock_cfg" > "$diag/stock-cfg80211-sections.txt"
+          readelf -S "$generated_mac" > "$diag/generated-mac80211-sections.txt"
+
+          # struct wiphy crosses the stock cfg80211/generated mac80211 boundary.
+          # Its rfkill member was where run 88 crashed during USB disconnect.
+          pahole -C wiphy "$stock_cfg" > "$diag/wiphy-stock.txt"
+          pahole -C wiphy "$generated_mac" > "$diag/wiphy-generated.txt"
+          diff -u "$diag/wiphy-stock.txt" "$diag/wiphy-generated.txt"             > "$diag/wiphy.diff" || {
+              echo "FATAL: struct wiphy differs from the stock cfg80211 ABI"
+              cat "$diag/wiphy.diff"
+              exit 1
+            }
+
+          # Compare more public cfg80211 types when both modules retain them.
+          for type in wireless_dev cfg80211_ops ieee80211_channel ieee80211_supported_band; do
+            if pahole -C "$type" "$stock_cfg" > "$diag/$type-stock.txt" 2>/dev/null &&
+               pahole -C "$type" "$generated_mac" > "$diag/$type-generated.txt" 2>/dev/null; then
+              diff -u "$diag/$type-stock.txt" "$diag/$type-generated.txt"                 > "$diag/$type.diff" || {
+                  echo "FATAL: struct $type differs from stock"
+                  cat "$diag/$type.diff"
+                  exit 1
+                }
+            else
+              echo "$type unavailable in one module; skipped" > "$diag/$type-skipped.txt"
+            fi
+          done
+
+          grep -n -E 'rfkill|size:' "$diag/wiphy-stock.txt" | tail -10
+          echo "=== Wireless structure-layout gate passed ==="
+
       - name: Verify WiFi modules
         run: |
           cd kernel
@@ -447,4 +435,5 @@ jobs:
           path: |
             kernel/build.log
             kernel/out/.config
+            artifact/layout/
           retention-days: 14
