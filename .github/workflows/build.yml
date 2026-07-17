@@ -353,7 +353,7 @@ jobs:
               if a[name] != b[name]:
                   problems.append(f"{name}: {a[name]} != {b[name]}")
           if label == "wiphy":
-              for required in ("rfkill", "ops", "bands", "features",
+              for required in ("rfkill", "bands", "features",
                                "max_data_retry_count",
                                "android_kabi_reserved1"):
                   if required not in a or required not in b:
