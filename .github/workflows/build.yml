@@ -236,6 +236,38 @@ jobs:
       - name: Prevent git version suffix
         run: echo "" > kernel/.scmversion
 
+      - name: Match Realme net_device Android KABI placement
+        run: |
+          cd kernel
+          python3 - << 'PYEOF'
+          from pathlib import Path
+          p = Path("include/linux/netdevice.h")
+          s = p.read_text()
+          inline = """#ifdef CONFIG_NET_L3_MASTER_DEV
+          	const struct l3mdev_ops	*l3mdev_ops;
+          #endif
+          """
+          if inline not in s:
+              raise SystemExit("FATAL: inline l3mdev_ops block not found")
+          s = s.replace(inline, "", 1)
+
+          start = s.index("struct net_device {")
+          end = s.index("#define to_net_dev", start)
+          chunk = s[start:end]
+          reserve = "	ANDROID_KABI_RESERVE(8);"
+          if chunk.count(reserve) != 1:
+              raise SystemExit("FATAL: net_device KABI reserve 8 not unique")
+          chunk = chunk.replace(
+              reserve,
+              "	ANDROID_KABI_USE(8, const struct l3mdev_ops *l3mdev_ops);",
+              1,
+          )
+          s = s[:start] + chunk + s[end:]
+          p.write_text(s)
+          print("Moved l3mdev_ops into net_device Android KABI reserve 8")
+          PYEOF
+          grep -n -E 'l3mdev_ops|ANDROID_KABI_USE\(8' include/linux/netdevice.h
+
       - name: Build only the WiFi external module trees
         timeout-minutes: 60
         run: |
