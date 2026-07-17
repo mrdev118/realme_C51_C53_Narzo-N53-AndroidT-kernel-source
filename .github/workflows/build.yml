@@ -313,21 +313,69 @@ jobs:
           # Its rfkill member was where run 88 crashed during USB disconnect.
           pahole --btf_base="$base_btf" -C wiphy "$stock_cfg" > "$diag/wiphy-stock.txt"
           pahole -C wiphy "$generated_mac" > "$diag/wiphy-generated.txt"
-          diff -u "$diag/wiphy-stock.txt" "$diag/wiphy-generated.txt"             > "$diag/wiphy.diff" || {
-              echo "FATAL: struct wiphy differs from the stock cfg80211 ABI"
-              cat "$diag/wiphy.diff"
-              exit 1
-            }
+          diff -u "$diag/wiphy-stock.txt" "$diag/wiphy-generated.txt" > "$diag/wiphy.diff" || true
 
-          # Compare more public cfg80211 types when both modules retain them.
+          # DWARF and split-BTF can print anonymous zero-size unions and flexible
+          # array alignment differently even when all real offsets are identical.
+          # Compare ABI-relevant top-level named-member offsets plus total size.
+          cat > /tmp/compare-layout.py << 'PYEOF'
+          import re, sys
+          def parse(path):
+              depth = 0
+              size = None
+              members = {}
+              started = False
+              for line in open(path):
+                  if not started:
+                      if re.search(r"\b(struct|union)\b.*\{", line):
+                          started = True
+                          depth = line.count("{") - line.count("}")
+                      continue
+                  if depth == 1:
+                      sm = re.search(r"/\* size:\s*(\d+)", line)
+                      if sm:
+                          size = int(sm.group(1))
+                      mm = re.search(
+                          r"([A-Za-z_]\w*)(?:\[[^]]*\])?\s*(?::\s*\d+)?\s*;"
+                          r"\s*/\*\s*(\d+)", line)
+                      if mm:
+                          members[mm.group(1)] = int(mm.group(2))
+                  depth += line.count("{") - line.count("}")
+              return size, members
+          a_size, a = parse(sys.argv[1])
+          b_size, b = parse(sys.argv[2])
+          label = sys.argv[3]
+          problems = []
+          if a_size != b_size:
+              problems.append(f"size {a_size} != {b_size}")
+          common = sorted(set(a) & set(b))
+          for name in common:
+              if a[name] != b[name]:
+                  problems.append(f"{name}: {a[name]} != {b[name]}")
+          if label == "wiphy":
+              for required in ("rfkill", "ops", "bands", "features",
+                               "max_data_retry_count",
+                               "android_kabi_reserved1"):
+                  if required not in a or required not in b:
+                      problems.append(f"required member missing from debug data: {required}")
+          report = [f"{label}: stock size={a_size}, generated size={b_size}",
+                    f"compared {len(common)} common named top-level members"]
+          report += problems or ["all compared offsets match"]
+          print("\n".join(report))
+          if problems:
+              raise SystemExit(1)
+          PYEOF
+
+          python3 /tmp/compare-layout.py             "$diag/wiphy-stock.txt" "$diag/wiphy-generated.txt" wiphy |
+            tee "$diag/wiphy-offset-check.txt"
+
+          # Compare more public cfg80211 types using the same real-offset gate.
           for type in wireless_dev cfg80211_ops ieee80211_channel ieee80211_supported_band; do
             if pahole --btf_base="$base_btf" -C "$type" "$stock_cfg" > "$diag/$type-stock.txt" 2>/dev/null &&
                pahole -C "$type" "$generated_mac" > "$diag/$type-generated.txt" 2>/dev/null; then
-              diff -u "$diag/$type-stock.txt" "$diag/$type-generated.txt"                 > "$diag/$type.diff" || {
-                  echo "FATAL: struct $type differs from stock"
-                  cat "$diag/$type.diff"
-                  exit 1
-                }
+              diff -u "$diag/$type-stock.txt" "$diag/$type-generated.txt" > "$diag/$type.diff" || true
+              python3 /tmp/compare-layout.py                 "$diag/$type-stock.txt" "$diag/$type-generated.txt" "$type" |
+                tee "$diag/$type-offset-check.txt"
             else
               echo "$type unavailable in one module; skipped" > "$diag/$type-skipped.txt"
             fi
