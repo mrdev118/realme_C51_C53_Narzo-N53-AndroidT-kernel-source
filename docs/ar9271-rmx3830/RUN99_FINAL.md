@@ -14,7 +14,7 @@ This folder is the recovery and reproducibility backup for the verified-safe run
 - Controlled USB unbind/rebind: PASS
 - Real physical hub unplug: PASS, no reboot or panic
 - SELinux after testing: `Enforcing`
-- Magisk package: `artifacts/ar9271-rmx3830-magisk-run99.zip`
+- Magisk package with rooted Kali integration: `artifacts/ar9271-rmx3830-magisk-run99-kali.zip`
 
 ## Canonical GitHub build
 
@@ -37,6 +37,8 @@ This folder is the recovery and reproducibility backup for the verified-safe run
 ## Important rule
 
 Install only the package whose module version is `run99-realme-kabi-1`. Run88 attached successfully but panicked on physical disconnect because its guessed ABI layout was wrong.
+
+For Aircrack-ng, start Kali from Termux with `kali-wifi`; an ordinary fake-root PRoot login cannot open capture sockets.
 
 
 
@@ -145,6 +147,8 @@ b519326ac478d0379989cf2994f17cefff5708d4b47c1bd6cc466e3ecb0ad596  ath9k_htc.ko
 - Reboot persistence with hub absent: PASS
 - Automatic bind after post-reboot hub connection: PASS
 - Installed monitor helper after reboot: PASS
+- Real-root PRoot Kali `airodump-ng wlan1mon`: PASS; detected APs/stations and hopped channels
+- Familiar Kali `sudo airmon-ng` compatibility workflow: PASS
 - SELinux returned to Enforcing: PASS
 
 Final assessment: run99 is the first build verified for both operation and safe USB teardown on this phone.
@@ -187,6 +191,25 @@ su -c ar9271-monitor stop
 
 The helper dynamically finds the PHY belonging to `wlan1`; it does not assume a fixed `phy1` number.
 
+## Kali/Aircrack-ng workflow
+
+Open Termux and enter the real-root Kali launcher:
+
+```text
+su -c kali-wifi
+```
+
+Then, inside Kali:
+
+```text
+sudo airmon-ng check kill
+sudo airmon-ng start wlan1
+sudo airodump-ng wlan1mon
+sudo airmon-ng stop wlan1mon
+```
+
+This must be the `kali-wifi` shell. A normal `proot-distro login kali` only has fake root and fails with `socket(PF_PACKET): Permission denied`. In compatibility mode, `check kill` intentionally does not kill Android's stock Wi-Fi processes; `wlan0` remains online while the independent AR9271 uses `wlan1mon`.
+
 ## Safe physical order
 
 1. Keep the AR9271 plugged into the powered USB hub.
@@ -202,4 +225,21 @@ If a future experiment causes trouble, boot without the hub and run:
 ```text
 adb shell "su -c 'touch /data/adb/modules/ar9271_rmx3830/disable; reboot'"
 ```
+
+
+
+---
+
+bc350eb362c0d47df51cc6781fac10258e12aa4205276eafa6d0e2816782ac0d  artifacts/run99-nethunter-wifi.zip
+b5de137a02b2b4f6ebadbe34b642f3d76505b072c4c806bdca0a9bdff5867531  artifacts/ar9271-rmx3830-magisk-run99.zip
+fb54f44609b1192a3240ab561709b6dbf5be5f7eeab0f28207abb165f6b7ce77  artifacts/ar9271-rmx3830-magisk-run99-kali.zip
+b44483f28cdbdeb526c4cad3e533fe6c9f6fbf7abedda36ad1bc78f1a42aa861  run99/modules/ath.ko
+01e4ec8d8604853eec0776a3c70d4fe1724ce69cfd1a94e7118cf6d8d61186e2  run99/modules/ath9k_common.ko
+b519326ac478d0379989cf2994f17cefff5708d4b47c1bd6cc466e3ecb0ad596  run99/modules/ath9k_htc.ko
+9b23ba2da756ac25a8e9123d140f3a8bf2142f358f9aacc7496ea55c72185850  run99/modules/ath9k_hw.ko
+7934e0485815f3332349318b10d591125712a339bd13729ec98fcf08f738d673  run99/modules/mac80211.ko
+78f7d592a95b419a02fde7440f30c606fc31a871cf0ce150ced40d4857173eb0  run99/firmware/ath9k_htc/htc_9271-1.4.0.fw
+
+# Historical run88 artifacts and pstore evidence remain in this folder for forensics.
+# They are intentionally excluded from this final install checksum set.
 
