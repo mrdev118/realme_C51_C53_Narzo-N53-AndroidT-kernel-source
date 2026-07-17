@@ -1,4 +1,4 @@
-# AR9271 on Realme RMX3830 â€” final working backup
+# AR9271 on Realme RMX3830 — final working backup
 
 This folder is the recovery and reproducibility backup for the verified-safe run99 Atheros AR9271 driver stack.
 
@@ -26,12 +26,12 @@ This folder is the recovery and reproducibility backup for the verified-safe run
 
 ## Folder map
 
-- `artifacts/` â€” run99 GitHub artifact and final Magisk ZIP
-- `run99/` â€” extracted modules and ABI/layout verification output
-- `FINAL_WALKTHROUGH.md` â€” root causes, fixes, validation, and future procedure
-- `PHONE_COMMANDS.md` â€” normal usage and diagnostic commands
-- `TEST_RESULTS.md` â€” final proof and identifiers
-- `pstore_disconnect_panic/` â€” preserved run88 failure evidence
+- `artifacts/` — run99 GitHub artifact and final Magisk ZIP
+- `run99/` — extracted modules and ABI/layout verification output
+- `FINAL_WALKTHROUGH.md` — root causes, fixes, validation, and future procedure
+- `PHONE_COMMANDS.md` — normal usage and diagnostic commands
+- `TEST_RESULTS.md` — final proof and identifiers
+- `pstore_disconnect_panic/` — preserved run88 failure evidence
 - Older run88 documents/artifacts are historical and unsafe; do not install run88
 
 ## Important rule
@@ -92,6 +92,8 @@ The workflow then compares generated layouts against stock BTF/layout evidence. 
 
 The final Magisk module is `ar9271_rmx3830`, version `run99-realme-kabi-1`. Its service waits for stock `cfg80211`, then loads the five modules in dependency order. Firmware is overlaid at `/vendor/firmware/ath9k_htc/htc_9271-1.4.0.fw`. The `ar9271-monitor` helper dynamically discovers the correct PHY from `wlan1`.
 
+The enabled module was then tested through a complete Android reboot with the hub absent. Android finished boot, the service automatically loaded all five exact-hash modules, SELinux remained Enforcing, and no AR9271 warning or panic occurred. After wireless ADB was restored and the hub was connected, USB `0cf3:9271` bound automatically, firmware 1.4 loaded, and `wlan1` appeared. The installed helper created `wlan1mon` on the dynamically detected PHY, verified monitor mode/channel 1/30 dBm, then removed it cleanly. Stock `wlan0` stayed connected throughout.
+
 ## Future rebuild path
 
 1. Start from the repository and the run99 workflow/source commit.
@@ -105,13 +107,9 @@ Run88 and its panic evidence remain in this backup only to prevent repeating the
 
 
 
-## Post-install reboot persistence proof
-
-On 2026-07-17 the enabled `run99-realme-kabi-1` Magisk module was tested from a cold Android userspace reboot with the hub absent. The service loaded all five exact-hash modules automatically. The phone completed boot, SELinux was `Enforcing`, and there were no AR9271 warnings or panics. After switching ADB to Wi-Fi and connecting the hub, USB `0cf3:9271` bound automatically, firmware 1.4 loaded, and `wlan1` appeared. The installed helper created `wlan1mon` on dynamic `phy1`, reported monitor mode/channel 1/30 dBm, and removed it cleanly. Stock `wlan0` remained connected.
-
 ---
 
-# Final verified test results â€” run99
+# Final verified test results — run99
 
 ## Build identity
 
@@ -144,6 +142,9 @@ b519326ac478d0379989cf2994f17cefff5708d4b47c1bd6cc466e3ecb0ad596  ath9k_htc.ko
 - Controlled USB unbind: PASS
 - Controlled USB rebind: PASS
 - Physical hub unplug: PASS, phone remained alive
+- Reboot persistence with hub absent: PASS
+- Automatic bind after post-reboot hub connection: PASS
+- Installed monitor helper after reboot: PASS
 - SELinux returned to Enforcing: PASS
 
 Final assessment: run99 is the first build verified for both operation and safe USB teardown on this phone.
